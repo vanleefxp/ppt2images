@@ -64,11 +64,13 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
             )
             .with_context(|| format!("failed to render slide {}", index + 1))?;
         if rendered.skipped_images > 0 {
-            eprintln!(
-                "warning: slide {} skipped {} unsupported or unreadable image(s)",
-                index + 1,
-                rendered.skipped_images
-            );
+            progress.suspend(|| {
+                eprintln!(
+                    "warning: slide {} skipped {} unsupported or unreadable image(s)",
+                    index + 1,
+                    rendered.skipped_images
+                );
+            });
         }
         writer
             .write_page(index, &rendered.bytes)

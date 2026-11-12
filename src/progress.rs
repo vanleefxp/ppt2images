@@ -1,37 +1,60 @@
-//! Slide export progress reporting.
+//! Visual slide-export progress reporting.
 
+use std::io::{IsTerminal, stderr};
 use std::path::Path;
 
-/// Reports completed slides as each output image is published to staging.
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+
+const TEMPLATE: &str = "{elapsed_precise} [{wide_bar:.cyan/blue}] {pos}/{len} ({percent}%) {msg}";
+
+/// Draws a live progress bar on an interactive stderr.
+///
+/// Progress is intentionally hidden when stderr is not a terminal so redirected
+/// logs and CI output stay clean.
 pub struct Progress {
-    total: usize,
+    bar: ProgressBar,
 }
 
 impl Progress {
     /// Creates a reporter for a known slide count.
     pub fn new(total: usize) -> Self {
-        Self { total }
+        let bar = ProgressBar::new(u64::try_from(total).unwrap_or(u64::MAX));
+        bar.set_draw_target(if total > 0 && stderr().is_terminal() {
+            ProgressDrawTarget::stderr()
+        } else {
+            ProgressDrawTarget::hidden()
+        });
+        if let Ok(style) = ProgressStyle::with_template(TEMPLATE) {
+            bar.set_style(style.progress_chars("█░"));
+        }
+        bar.set_message("exporting");
+        Self { bar }
     }
 
-    /// Reports one completed slide.
+    /// Reports one completed slide and the output file being staged.
     pub fn advance(&self, completed: usize, path: Option<&Path>) {
-        if self.total == 0 {
-            return;
+        self.bar
+            .set_position(u64::try_from(completed).unwrap_or(u64::MAX));
+        if let Some(path) = path {
+            self.bar.set_message(path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ));
         }
-        let completed = completed.min(self.total);
-        let percent = (u64::try_from(completed).unwrap_or(u64::MAX) * 100)
-            / u64::try_from(self.total).unwrap_or(1);
-        match path {
-            Some(path) => eprintln!(
-                "Exported {completed}/{} ({percent}%): {}",
-                self.total,
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned()
-                )
-            ),
-            None => eprintln!("Exported {completed}/{} ({percent}%)", self.total),
-        }
+    }
+
+    /// Runs output that would otherwise corrupt the active bar.
+    pub fn suspend<F, R>(&self, action: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        self.bar.suspend(action)
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.bar.finish_and_clear();
     }
 }
 
@@ -43,11 +66,14 @@ mod tests {
 
     #[test]
     fn accepts_zero_total_without_reporting() {
-        Progress::new(0).advance(1, Some(Path::new("0000.png")));
+        let progress = Progress::new(0);
+        progress.advance(1, Some(Path::new("0000.png")));
     }
 
     #[test]
-    fn clamps_progress_to_total() {
-        Progress::new(2).advance(9, None);
+    fn reports_completed_work() {
+        let progress = Progress::new(2);
+        progress.advance(2, Some(Path::new("0001.png")));
+        progress.suspend(|| 42);
     }
 }

@@ -91,21 +91,24 @@ and 2,400 DPI.
 
 ### Progress
 
-After each slide is rendered and staged, an `Exported` line reports the count,
-percentage, and output file name on stderr:
+An interactive stderr shows a live bar with elapsed time, completion count,
+percentage, and the image currently being staged:
 
 ```text
 Converting 'slides.pptx' with native (size: 1920px wide, auto height)
-Exported 1/25 (4%): 0000.png
-Exported 2/25 (8%): 0001.png
-...
-Exported 25/25 (100%): 0024.png
+00:00:03 [████████████████░░░░] 20/25 (80%) 0019.png
 Wrote 25 images at 1920x1080 to 'frames'
 ```
 
+The bar is drawn with `indicatif`, the progress-bar library beneath
+`tracing-indicatif`. It updates in place rather than appending one line per
+slide. When stderr is redirected to a file or is not a terminal, the bar is
+hidden so logs stay clean.
+
 The PowerPoint backend streams its export count from the COM automation
-script, so progress also appears while PowerPoint is still exporting. The final
-`Wrote` summary is printed on stdout; progress and warnings use stderr.
+script, so the bar also advances while PowerPoint is still exporting. Warnings
+temporarily suspend and redraw the bar. The final `Wrote` summary is printed on
+stdout.
 
 ### Page numbering
 

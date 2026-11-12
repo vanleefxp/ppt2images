@@ -148,9 +148,6 @@ fn converts_a_pptx_with_custom_numbering() {
     assert_image_size(&first, 320, 180);
     assert_image_size(&second, 320, 180);
     assert!(!output.join("0000.png").exists());
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("Exported 1/2 (50%)"), "stderr: {stderr}");
-    assert!(stderr.contains("Exported 2/2 (100%)"), "stderr: {stderr}");
     let names = fs::read_dir(&output)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
