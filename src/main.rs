@@ -1,5 +1,8 @@
 //! `ppt2images` converts presentation slides into numbered PNG images.
 
+// Production code must not panic through unwrap; tests use unwrap for concise setup.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 mod backend;
 mod cli;
 mod input;

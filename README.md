@@ -276,5 +276,6 @@ just test
 `cargo clippy --all-targets --all-features -- -D warnings`.
 `just test` runs `cargo test --all-targets`.
 
-The codebase does not suppress warnings with `#[allow(...)]`. Comments and
-commit messages are written in English.
+Production code denies `clippy::unwrap_used`; unit tests are exempt so their
+setup code can stay concise. The codebase does not suppress warnings with
+`#[allow(...)]`. Comments and commit messages are written in English.
