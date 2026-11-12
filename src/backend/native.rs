@@ -25,6 +25,11 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
         bail!("the presentation contains no slides");
     }
 
+    let plan = request
+        .selection
+        .resolve(request.output.start_index, page_count)
+        .map_err(anyhow::Error::msg)
+        .context("invalid page selection")?;
     register_system_fonts(&mut presentation)?;
 
     let first_slide = presentation
@@ -50,32 +55,32 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
         .map_err(anyhow::Error::msg)
         .context("failed to derive an output size from the native slide dimensions")?;
     let scale = render_scale(base_width, base_height, resolution);
-    let mut writer = request.output.writer(page_count, resolution)?;
-    let progress = Progress::new(page_count);
+    let mut writer = request.output.writer(&plan.page_numbers, resolution)?;
+    let progress = Progress::new(plan.len());
 
-    for index in 0..page_count {
+    for (output_index, &slide_index) in plan.slide_indices.iter().enumerate() {
+        let page_number = plan.page_numbers[output_index];
         let rendered = presentation
             .render_png(
-                index,
+                slide_index,
                 &RenderOptions {
                     scale,
                     ..RenderOptions::default()
                 },
             )
-            .with_context(|| format!("failed to render slide {}", index + 1))?;
+            .with_context(|| format!("failed to render page {page_number}"))?;
         if rendered.skipped_images > 0 {
             progress.suspend(|| {
                 eprintln!(
-                    "warning: slide {} skipped {} unsupported or unreadable image(s)",
-                    index + 1,
+                    "warning: page {page_number} skipped {} unsupported or unreadable image(s)",
                     rendered.skipped_images
                 );
             });
         }
         writer
-            .write_page(index, &rendered.bytes)
-            .with_context(|| format!("failed to write slide {}", index + 1))?;
-        progress.advance(index + 1, writer.page_path(index));
+            .write_page(output_index, &rendered.bytes)
+            .with_context(|| format!("failed to write page {page_number}"))?;
+        progress.advance(output_index + 1, writer.page_path(output_index));
     }
 
     let files = writer.finish()?;

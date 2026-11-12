@@ -5,6 +5,7 @@ mod cli;
 mod input;
 mod output;
 mod page_format;
+mod page_selection;
 mod progress;
 mod size;
 
@@ -34,6 +35,7 @@ fn run() -> Result<()> {
     let input = backend::prepare_input(&cli.input)?;
     let backend = backend::resolve(cli.backend, &input)?;
     let size = cli.size_spec();
+    let selection = cli.selection();
     let output = OutputSpec {
         directory: cli.output_dir.clone(),
         page_format: cli.page_format.clone(),
@@ -43,6 +45,7 @@ fn run() -> Result<()> {
     let request = ConversionRequest {
         input: input.clone(),
         size,
+        selection,
         output,
     };
 

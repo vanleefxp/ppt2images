@@ -9,6 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use anyhow::{Context, Result, bail};
 
 use super::{ConversionOutput, ConversionRequest};
+use crate::page_selection::{PagePlan, PageSelection};
 use crate::progress::Progress;
 use crate::size::{Resolution, SizeSpec, SourceSize};
 
@@ -33,19 +34,28 @@ try {
         throw 'No export dimensions were received from ppt2images.'
     }
     $parts = $target.Trim().Split(' ')
-    if ($parts.Count -ne 2) {
-        throw 'Invalid export dimensions received from ppt2images.'
+    if ($parts.Count -ne 3) {
+        throw 'Invalid export request received from ppt2images.'
     }
     $width = [int]$parts[0]
     $height = [int]$parts[1]
     if ($width -le 0 -or $height -le 0) {
         throw 'Invalid export dimensions received from ppt2images.'
     }
-    for ($index = 1; $index -le $count; $index++) {
-        $name = 'slide-{0:D4}.png' -f ($index - 1)
+    $selected = @($parts[2].Split(',') | ForEach-Object { [int]$_ })
+    $total = $selected.Count
+    if ($total -eq 0) {
+        throw 'No slides were selected for export.'
+    }
+    for ($index = 0; $index -lt $total; $index++) {
+        $slideNumber = $selected[$index]
+        if ($slideNumber -lt 1 -or $slideNumber -gt $count) {
+            throw 'A selected slide number is outside the presentation.'
+        }
+        $name = 'slide-{0:D4}.png' -f $index
         $path = Join-Path $outputDirectory $name
-        $presentation.Slides.Item($index).Export($path, 'PNG', $width, $height)
-        [Console]::Out.WriteLine('PPT2IMAGES_PROGRESS ' + $index + ' ' + $count)
+        $presentation.Slides.Item($slideNumber).Export($path, 'PNG', $width, $height)
+        [Console]::Out.WriteLine('PPT2IMAGES_PROGRESS ' + ($index + 1) + ' ' + $total)
         [Console]::Out.Flush()
     }
 } catch {
@@ -77,10 +87,17 @@ enum ScriptEvent {
     Progress { completed: usize },
 }
 
+struct ScriptSettings<'a> {
+    size: SizeSpec,
+    selection: &'a PageSelection,
+    start_index: u64,
+}
+
 struct ScriptRun {
     status: ExitStatus,
     metadata: Option<ScriptMetadata>,
     resolution: Option<Resolution>,
+    plan: Option<PagePlan>,
     stderr: String,
     stdout_tail: String,
 }
@@ -110,7 +127,11 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
         &export_directory,
         &script_path,
         &stderr_path,
-        request.size,
+        ScriptSettings {
+            size: request.size,
+            selection: &request.selection,
+            start_index: request.output.start_index,
+        },
     )?;
     if !run.status.success() {
         bail!(
@@ -128,24 +149,28 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
     let resolution = run
         .resolution
         .context("PowerPoint did not receive an output size")?;
+    let plan = run
+        .plan
+        .context("PowerPoint did not receive a page selection")?;
 
     let exported = collect_exports(&export_directory)?;
-    if exported.len() != metadata.slide_count {
+    if exported.len() != plan.len() {
         bail!(
-            "PowerPoint reported {} slides but exported {} images",
-            metadata.slide_count,
+            "PowerPoint was asked for {} pages but exported {} images",
+            plan.len(),
             exported.len()
         );
     }
 
     eprintln!("Finalizing {} exported images", exported.len());
-    let mut writer = request.output.writer(exported.len(), resolution)?;
+    let mut writer = request.output.writer(&plan.page_numbers, resolution)?;
     for (index, path) in exported.iter().enumerate() {
+        let page_number = plan.page_numbers[index];
         let bytes = fs::read(path)
             .with_context(|| format!("failed to read exported image '{}'", path.display()))?;
         writer
             .write_page(index, &bytes)
-            .with_context(|| format!("failed to write slide {}", index + 1))?;
+            .with_context(|| format!("failed to write page {page_number}"))?;
     }
     let files = writer.finish()?;
     Ok(ConversionOutput { files, resolution })
@@ -181,7 +206,7 @@ fn run_script(
     output_directory: &Path,
     script_path: &Path,
     stderr_path: &Path,
-    size: SizeSpec,
+    settings: ScriptSettings<'_>,
 ) -> Result<ScriptRun> {
     fs::write(script_path, SCRIPT)
         .with_context(|| format!("failed to write '{}'", script_path.display()))?;
@@ -217,7 +242,8 @@ fn run_script(
     let mut line = String::new();
     let mut metadata = None;
     let mut resolution = None;
-    let mut size_error = None;
+    let mut plan = None;
+    let mut setup_error = None;
     let mut progress = None;
     let mut stdout_tail = String::new();
     loop {
@@ -233,7 +259,6 @@ fn run_script(
             match event {
                 ScriptEvent::Metadata(value) => {
                     metadata = Some(value);
-                    progress = Some(Progress::new(value.slide_count));
                     let source = SourceSize::from_points(
                         value.slide_width_points,
                         value.slide_height_points,
@@ -241,23 +266,37 @@ fn run_script(
                     .map_err(anyhow::Error::msg)
                     .context("PowerPoint reported invalid slide dimensions");
                     let target = source.and_then(|source| {
-                        size.resolve(source).map_err(anyhow::Error::msg).context(
+                        let resolution = settings.size.resolve(source).map_err(anyhow::Error::msg).context(
                             "failed to derive an output size from the PowerPoint slide dimensions",
-                        )
+                        )?;
+                        let plan = settings
+                            .selection
+                            .resolve(settings.start_index, value.slide_count)
+                            .map_err(anyhow::Error::msg)
+                            .context("invalid page selection")?;
+                        Ok((resolution, plan))
                     });
                     match target {
-                        Ok(target) => {
-                            writeln!(stdin, "{} {}", target.width, target.height)
-                                .context("failed to send export dimensions to PowerPoint")?;
+                        Ok((target, selected)) => {
+                            let slides = selected
+                                .slide_indices
+                                .iter()
+                                .map(|index| (index + 1).to_string())
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            writeln!(stdin, "{} {} {slides}", target.width, target.height)
+                                .context("failed to send export selection to PowerPoint")?;
                             stdin
                                 .flush()
-                                .context("failed to flush export dimensions to PowerPoint")?;
+                                .context("failed to flush export selection to PowerPoint")?;
+                            progress = Some(Progress::new(selected.len()));
                             resolution = Some(target);
+                            plan = Some(selected);
                         }
                         Err(error) => {
-                            let _ = writeln!(stdin, "0 0");
+                            let _ = writeln!(stdin, "0 0 0");
                             let _ = stdin.flush();
-                            size_error = Some(error);
+                            setup_error = Some(error);
                         }
                     }
                 }
@@ -269,7 +308,7 @@ fn run_script(
             }
         } else if !text.is_empty() {
             if text.starts_with("PPT2IMAGES_META ") {
-                let _ = writeln!(stdin, "0 0");
+                let _ = writeln!(stdin, "0 0 0");
                 let _ = stdin.flush();
             }
             append_tail(&mut stdout_tail, text);
@@ -280,7 +319,7 @@ fn run_script(
         .wait()
         .context("failed to wait for the PowerPoint automation script")?;
     let stderr = fs::read_to_string(stderr_path).unwrap_or_default();
-    if let Some(error) = size_error {
+    if let Some(error) = setup_error {
         bail!(
             "{error}: {}",
             command_diagnostic(&status, &stderr, &stdout_tail)
@@ -290,6 +329,7 @@ fn run_script(
         status,
         metadata,
         resolution,
+        plan,
         stderr,
         stdout_tail,
     })
@@ -444,7 +484,7 @@ mod tests {
         let fake_powershell = directory.path().join("fake-powershell");
         fs::write(
             &fake_powershell,
-            "#!/bin/sh\nprintf 'PPT2IMAGES_META 960 540 2\\n'\nIFS= read -r target\nprintf 'PPT2IMAGES_PROGRESS 1 2\\n'\nprintf 'PPT2IMAGES_PROGRESS 2 2\\n'\n",
+            "#!/bin/sh\nprintf 'PPT2IMAGES_META 960 540 2\\n'\nIFS= read -r target\nif [ \"$target\" != '320 180 2' ]; then echo \"unexpected target: $target\" >&2; exit 1; fi\nprintf 'PPT2IMAGES_PROGRESS 1 1\\n'\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&fake_powershell).unwrap().permissions();
@@ -459,7 +499,11 @@ mod tests {
             &output_directory,
             &directory.path().join("export.ps1"),
             &directory.path().join("stderr.txt"),
-            SizeSpec::Width(320),
+            super::ScriptSettings {
+                size: SizeSpec::Width(320),
+                selection: &crate::page_selection::PageSelection::parse("2").unwrap(),
+                start_index: 1,
+            },
         )
         .unwrap();
         assert!(run.status.success());
@@ -476,6 +520,13 @@ mod tests {
             Some(crate::size::Resolution {
                 width: 320,
                 height: 180,
+            })
+        );
+        assert_eq!(
+            run.plan,
+            Some(crate::page_selection::PagePlan {
+                page_numbers: vec![2],
+                slide_indices: vec![1],
             })
         );
     }

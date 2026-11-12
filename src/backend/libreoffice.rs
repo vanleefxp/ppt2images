@@ -158,17 +158,23 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
         .map_err(anyhow::Error::msg)
         .context("failed to derive an output size from the PDF page dimensions")?;
 
-    let page_count = pages.len();
-    let mut writer = request.output.writer(page_count, resolution)?;
-    let progress = Progress::new(page_count);
+    let plan = request
+        .selection
+        .resolve(request.output.start_index, pages.len())
+        .map_err(anyhow::Error::msg)
+        .context("invalid page selection")?;
+    let mut writer = request.output.writer(&plan.page_numbers, resolution)?;
+    let progress = Progress::new(plan.len());
     let cache = RenderCache::new();
     let interpreter_settings = InterpreterSettings::default();
     let render_settings = RenderSettings::default();
 
-    for (index, page) in pages.iter().enumerate() {
+    for (output_index, &page_index) in plan.slide_indices.iter().enumerate() {
+        let page_number = plan.page_numbers[output_index];
+        let page = &pages[page_index];
         let (page_width, page_height) = page.render_dimensions();
         if page_width <= 0.0 || page_height <= 0.0 {
-            bail!("PDF page {} has an invalid size", index + 1);
+            bail!("PDF page {page_number} has an invalid size");
         }
         let pixmap = hayro::render(
             page,
@@ -185,11 +191,11 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
         );
         let png = pixmap
             .into_png()
-            .with_context(|| format!("failed to encode PDF page {}", index + 1))?;
+            .with_context(|| format!("failed to encode PDF page {page_number}"))?;
         writer
-            .write_page(index, &png)
-            .with_context(|| format!("failed to write slide {}", index + 1))?;
-        progress.advance(index + 1, writer.page_path(index));
+            .write_page(output_index, &png)
+            .with_context(|| format!("failed to write page {page_number}"))?;
+        progress.advance(output_index + 1, writer.page_path(output_index));
     }
     let files = writer.finish()?;
     Ok(ConversionOutput { files, resolution })

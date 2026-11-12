@@ -33,6 +33,12 @@ ppt2images slides.pptx -o frames --height 1080
 # Render at 150 DPI using the slide's physical size
 ppt2images slides.pptx -o frames --dpi 150
 
+# Export selected pages: 1-3, page 6, and page 9 through the end
+ppt2images slides.pptx -o frames --pages '1-3,6,9-'
+
+# Export every second page from 1 through 10
+ppt2images slides.pptx -o frames --pages '1-10@2'
+
 # Use LibreOffice for maximum layout fidelity
 ppt2images slides.pptx --backend libreoffice -o frames
 
@@ -44,8 +50,8 @@ ppt2images slides.pptx -o frames --overwrite
 ```
 
 By default the output directory is `./output`, the image size is
-`1920x1080`, and files are named `0000.png`, `0001.png`, ... (four digits,
-starting at zero).
+`1920x1080`, and files are named `0001.png`, `0002.png`, ... (four digits,
+starting at one).
 
 ## Options
 
@@ -59,7 +65,8 @@ Usage: ppt2images [OPTIONS] <INPUT>
       --height <PX>                        Height; width follows slide aspect ratio
       --dpi <DPI>                          Output DPI from physical slide size
       --page-format <FORMAT>               Page-number pattern [default: {page:04}]
-      --start-index <N>                    First page number [default: 0]
+      --start-index <N>                    First page number [default: 1]
+      --pages <RANGES>                     Pages to export; all pages by default
   -b, --backend <auto|native|libreoffice|powerpoint>
                                            Conversion backend [default: auto]
       --overwrite                          Replace existing PNG files
@@ -96,7 +103,7 @@ percentage, and the image currently being staged:
 
 ```text
 Converting 'slides.pptx' with native (size: 1920px wide, auto height)
-00:00:03 [████████████████░░░░] 20/25 (80%) 0019.png
+00:00:03 [████████████████░░░░] 20/25 (80%) 0020.png
 Wrote 25 images at 1920x1080 to 'frames' in 2.34s
 ```
 
@@ -130,7 +137,43 @@ The PNG extension is always added, so a format should not include `.png`.
 Formats must not contain path separators.
 
 `--start-index` sets the number assigned to the first slide. The default is
-`0`, so the first file is `0000.png`.
+`1`, so the first file is `0001.png`.
+
+### Page selection
+
+Use `--pages` to export only selected slides. Numbers use the same indexing as
+`--start-index`, so with `--start-index 10` the first available page is 10.
+
+```text
+--pages '1-3,6,9-'
+```
+
+| Syntax | Meaning |
+| --- | --- |
+| `5` | Page 5 only |
+| `a-b` | Pages a through b, both inclusive |
+| `a-` | Page a through the last page |
+| `-b` | The first available page through b. With the default `start-index` this is `1-b` |
+| `a-b@t` | Pages a, a+t, a+2t, ... while the page is at most b |
+| `a-@t` | Page a, a+t, ... through the last page |
+| `-b@t` | The first available page, then every t-th page through b |
+
+Comma-separated ranges may overlap. Overlapping pages are merged and exported
+once, in ascending page order. The progress total and final image count reflect
+only the selected pages.
+
+Examples:
+
+```bash
+ppt2images slides.pptx --pages '2,4,6'
+ppt2images slides.pptx --pages '5-'
+ppt2images slides.pptx --pages '-4'
+ppt2images slides.pptx --pages '1-20@3'
+ppt2images slides.pptx --start-index 10 --pages '10-14'
+```
+
+Selection numbers outside the valid `start-index` through last-page range are
+rejected.
 
 ### Existing files
 

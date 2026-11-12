@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use crate::cli::Backend;
 use crate::input::{PresentationKind, detect_kind};
 use crate::output::OutputSpec;
+use crate::page_selection::PageSelection;
 use crate::size::{Resolution, SizeSpec};
 
 pub mod fonts;
@@ -21,6 +22,8 @@ pub struct ConversionRequest {
     pub input: std::path::PathBuf,
     /// Requested output size selection.
     pub size: SizeSpec,
+    /// Page ranges to export.
+    pub selection: PageSelection,
     /// Output naming and publication options.
     pub output: OutputSpec,
 }

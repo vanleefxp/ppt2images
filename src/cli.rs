@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::page_format::{DEFAULT_PATTERN, PageFormat};
+use crate::page_selection::PageSelection;
 use crate::size::{Resolution, SizeSpec, parse_dimension, parse_dpi};
 
 /// Conversion engine selected by the user.
@@ -92,9 +93,22 @@ pub struct Cli {
     )]
     pub page_format: PageFormat,
 
-    /// Number assigned to the first slide.
-    #[arg(long, value_name = "N", default_value_t = 0)]
+    /// Number assigned to the first slide; page selection uses this numbering.
+    #[arg(long, value_name = "N", default_value_t = 1)]
     pub start_index: u64,
+
+    /// Pages to export, for example 1-3,6,9- or 1-10@2.
+    ///
+    /// Defaults to all pages. Ranges are inclusive. a- means a through the
+    /// last page, -b means the first page through b, and @t selects every
+    /// t-th page. Overlapping ranges are merged.
+    #[arg(
+        long,
+        value_name = "RANGES",
+        value_parser = PageSelection::parse,
+        allow_hyphen_values = true
+    )]
+    pub pages: Option<PageSelection>,
 
     /// Conversion backend.
     #[arg(short, long, value_enum, default_value_t = Backend::Auto, ignore_case = true)]
@@ -120,6 +134,11 @@ impl Cli {
             SizeSpec::default()
         }
     }
+
+    /// Returns the selected page ranges, or every page when omitted.
+    pub fn selection(&self) -> PageSelection {
+        self.pages.clone().unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +146,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{Backend, Cli};
+    use crate::page_selection::PageSelection;
     use crate::size::{DEFAULT_RESOLUTION, Resolution, SizeSpec};
 
     #[test]
@@ -138,9 +158,10 @@ mod tests {
     fn defaults_to_auto_backend_and_exact_size() {
         let cli = Cli::try_parse_from(["ppt2images", "deck.pptx"]).unwrap();
         assert_eq!(cli.backend, Backend::Auto);
-        assert_eq!(cli.start_index, 0);
+        assert_eq!(cli.start_index, 1);
         assert_eq!(cli.size_spec(), SizeSpec::Exact(DEFAULT_RESOLUTION));
         assert_eq!(cli.page_format.format(0), "0000");
+        assert_eq!(cli.selection(), PageSelection::all());
     }
 
     #[test]
@@ -162,6 +183,16 @@ mod tests {
 
         let dpi = Cli::try_parse_from(["ppt2images", "deck.pptx", "--dpi", "150"]).unwrap();
         assert_eq!(dpi.size_spec(), SizeSpec::Dpi(150));
+    }
+
+    #[test]
+    fn parses_page_selections() {
+        let cli = Cli::try_parse_from(["ppt2images", "deck.pptx", "--pages", "1-3,6,9-"]).unwrap();
+        assert_eq!(cli.selection(), PageSelection::parse("1-3,6,9-").unwrap());
+        let open = Cli::try_parse_from(["ppt2images", "deck.pptx", "--pages", "-3"]).unwrap();
+        assert_eq!(open.selection(), PageSelection::parse("-3").unwrap());
+        let invalid = Cli::try_parse_from(["ppt2images", "deck.pptx", "--pages", "1-2-3"]);
+        assert!(invalid.is_err());
     }
 
     #[test]

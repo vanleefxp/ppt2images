@@ -27,9 +27,9 @@ pub struct OutputSpec {
 }
 
 impl OutputSpec {
-    /// Creates a staged writer after the backend has learned the slide count.
-    pub fn writer(&self, page_count: usize, resolution: Resolution) -> Result<OutputWriter> {
-        OutputWriter::new(self, page_count, resolution)
+    /// Creates a staged writer for the selected page numbers.
+    pub fn writer(&self, page_numbers: &[u64], resolution: Resolution) -> Result<OutputWriter> {
+        OutputWriter::new(self, page_numbers, resolution)
     }
 }
 
@@ -44,15 +44,10 @@ pub struct OutputWriter {
 }
 
 impl OutputWriter {
-    fn new(spec: &OutputSpec, page_count: usize, resolution: Resolution) -> Result<Self> {
-        if page_count == 0 {
-            bail!("the presentation contains no slides");
+    fn new(spec: &OutputSpec, page_numbers: &[u64], resolution: Resolution) -> Result<Self> {
+        if page_numbers.is_empty() {
+            bail!("the page selection contains no pages");
         }
-        let start_index = usize::try_from(spec.start_index)
-            .context("start index is too large for this platform")?;
-        let last_index = start_index
-            .checked_add(page_count - 1)
-            .context("page numbering overflow")?;
 
         fs::create_dir_all(&spec.directory).with_context(|| {
             format!(
@@ -68,10 +63,9 @@ impl OutputWriter {
         }
 
         let mut names = BTreeSet::new();
-        let mut destinations = Vec::with_capacity(page_count);
-        for index in start_index..=last_index {
-            let page_number = u64::try_from(index).context("page number is too large")?;
-            let stem = spec.page_format.format(page_number);
+        let mut destinations = Vec::with_capacity(page_numbers.len());
+        for page_number in page_numbers {
+            let stem = spec.page_format.format(*page_number);
             if !names.insert(stem.clone()) {
                 bail!("page format produces duplicate output name '{stem}.png'");
             }
@@ -114,7 +108,7 @@ impl OutputWriter {
             resolution,
             overwrite: spec.overwrite,
             staging,
-            written: vec![false; page_count],
+            written: vec![false; page_numbers.len()],
         })
     }
 
@@ -256,22 +250,28 @@ mod tests {
         OutputSpec {
             directory: directory.to_path_buf(),
             page_format: PageFormat::default(),
-            start_index: 0,
+            start_index: 1,
             overwrite: false,
         }
+    }
+
+    fn pages(count: u64) -> Vec<u64> {
+        (1..=count).collect()
     }
 
     #[test]
     fn publishes_pages_with_default_names_and_exact_size() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output.writer(2, Resolution::new(40, 30).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&pages(2), Resolution::new(40, 30).unwrap())
+            .unwrap();
         writer.write_page(0, &sample_png(20, 20)).unwrap();
         writer.write_page(1, &sample_png(20, 20)).unwrap();
         let files = writer.finish().unwrap();
 
-        assert_eq!(files[0].file_name().unwrap(), "0000.png");
-        assert_eq!(files[1].file_name().unwrap(), "0001.png");
+        assert_eq!(files[0].file_name().unwrap(), "0001.png");
+        assert_eq!(files[1].file_name().unwrap(), "0002.png");
         for path in files {
             let image = image::open(path).unwrap().to_rgb8();
             assert_eq!(image.dimensions(), (40, 30));
@@ -282,7 +282,9 @@ mod tests {
     fn flattens_transparency_onto_white() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output.writer(1, Resolution::new(2, 2).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&pages(1), Resolution::new(2, 2).unwrap())
+            .unwrap();
         let image = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 0]));
         let mut bytes = Vec::new();
         PngEncoder::new(&mut bytes)
@@ -297,9 +299,9 @@ mod tests {
     #[test]
     fn refuses_existing_output_without_overwrite() {
         let directory = tempdir().unwrap();
-        fs::write(directory.path().join("0000.png"), b"existing").unwrap();
+        fs::write(directory.path().join("0001.png"), b"existing").unwrap();
         let error = spec(directory.path())
-            .writer(1, Resolution::new(10, 10).unwrap())
+            .writer(&pages(1), Resolution::new(10, 10).unwrap())
             .err()
             .unwrap();
         assert!(error.to_string().contains("--overwrite"));
@@ -308,10 +310,12 @@ mod tests {
     #[test]
     fn overwrites_existing_output_when_requested() {
         let directory = tempdir().unwrap();
-        fs::write(directory.path().join("0000.png"), b"existing").unwrap();
+        fs::write(directory.path().join("0001.png"), b"existing").unwrap();
         let mut output = spec(directory.path());
         output.overwrite = true;
-        let mut writer = output.writer(1, Resolution::new(10, 10).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&pages(1), Resolution::new(10, 10).unwrap())
+            .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         let files = writer.finish().unwrap();
         assert!(image::open(&files[0]).is_ok());
@@ -321,20 +325,24 @@ mod tests {
     fn incomplete_output_is_not_published() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output.writer(2, Resolution::new(10, 10).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&pages(2), Resolution::new(10, 10).unwrap())
+            .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         let error = writer.finish().err().unwrap();
         assert!(error.to_string().contains("page 1"));
-        assert!(!directory.path().join("0000.png").exists());
+        assert!(!directory.path().join("0001.png").exists());
     }
 
     #[test]
-    fn honors_start_index_and_prefix() {
+    fn honors_page_numbers_and_prefix() {
         let directory = tempdir().unwrap();
         let mut output = spec(directory.path());
         output.start_index = 5;
         output.page_format = PageFormat::parse("slide-{page:03}").unwrap();
-        let mut writer = output.writer(2, Resolution::new(10, 10).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&[5, 6], Resolution::new(10, 10).unwrap())
+            .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         writer.write_page(1, &sample_png(10, 10)).unwrap();
         let files = writer.finish().unwrap();
@@ -346,7 +354,9 @@ mod tests {
     fn rejects_duplicate_and_out_of_range_pages() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output.writer(1, Resolution::new(10, 10).unwrap()).unwrap();
+        let mut writer = output
+            .writer(&pages(1), Resolution::new(10, 10).unwrap())
+            .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         assert!(writer.write_page(0, &sample_png(10, 10)).is_err());
         assert!(writer.write_page(1, &sample_png(10, 10)).is_err());

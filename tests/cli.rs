@@ -147,7 +147,7 @@ fn converts_a_pptx_with_custom_numbering() {
     assert!(second.is_file());
     assert_image_size(&first, 320, 180);
     assert_image_size(&second, 320, 180);
-    assert!(!output.join("0000.png").exists());
+    assert!(!output.join("0001.png").exists());
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(stdout.contains(" in "), "stdout: {stdout}");
     let names = fs::read_dir(&output)
@@ -162,12 +162,12 @@ fn refuses_to_replace_outputs_without_overwrite() {
     let (directory, input) = fixture();
     let output = directory.path().join("frames");
     fs::create_dir_all(&output).unwrap();
-    fs::write(output.join("0000.png"), b"keep").unwrap();
+    fs::write(output.join("0001.png"), b"keep").unwrap();
     let result = run(&input, &output, &[]);
     assert!(!result.status.success());
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("--overwrite"), "stderr: {stderr}");
-    assert_eq!(fs::read(output.join("0000.png")).unwrap(), b"keep");
+    assert_eq!(fs::read(output.join("0001.png")).unwrap(), b"keep");
 }
 
 #[test]
@@ -175,15 +175,15 @@ fn overwrite_publishes_a_complete_new_set() {
     let (directory, input) = fixture();
     let output = directory.path().join("frames");
     fs::create_dir_all(&output).unwrap();
-    fs::write(output.join("0000.png"), b"old").unwrap();
     fs::write(output.join("0001.png"), b"old").unwrap();
+    fs::write(output.join("0002.png"), b"old").unwrap();
     let result = run(&input, &output, &["--overwrite"]);
     assert!(
         result.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    for name in ["0000.png", "0001.png"] {
+    for name in ["0001.png", "0002.png"] {
         assert!(image::open(output.join(name)).is_ok());
     }
 }
@@ -199,7 +199,7 @@ fn derives_height_from_width_and_width_from_height() {
         "stderr: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_image_size(&width_output.join("0000.png"), 320, 180);
+    assert_image_size(&width_output.join("0001.png"), 320, 180);
 
     let height_output = directory.path().join("height");
     let result = run_with_size(&input, &height_output, &["--height", "180"], &[]);
@@ -208,7 +208,7 @@ fn derives_height_from_width_and_width_from_height() {
         "stderr: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_image_size(&height_output.join("0000.png"), 320, 180);
+    assert_image_size(&height_output.join("0001.png"), 320, 180);
 }
 
 #[test]
@@ -221,5 +221,51 @@ fn derives_size_from_dpi() {
         "stderr: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_image_size(&output.join("0000.png"), 320, 180);
+    assert_image_size(&output.join("0001.png"), 320, 180);
+}
+
+#[test]
+fn exports_only_selected_pages() {
+    let (directory, input) = fixture();
+    let output = directory.path().join("selected");
+    let result = run(&input, &output, &["--pages", "2"]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!output.join("0001.png").exists());
+    assert_image_size(&output.join("0002.png"), 320, 180);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("Wrote 1 image"), "stdout: {stdout}");
+}
+
+#[test]
+fn overlapping_page_ranges_are_merged() {
+    let (directory, input) = fixture();
+    let output = directory.path().join("overlap");
+    let result = run(&input, &output, &["--pages", "1-2,2,1"]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_image_size(&output.join("0001.png"), 320, 180);
+    assert_image_size(&output.join("0002.png"), 320, 180);
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+}
+
+#[test]
+fn page_selection_uses_the_configured_start_index() {
+    let (directory, input) = fixture();
+    let output = directory.path().join("start-index");
+    let result = run(&input, &output, &["--start-index", "5", "--pages", "5-6"]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_image_size(&output.join("0005.png"), 320, 180);
+    assert_image_size(&output.join("0006.png"), 320, 180);
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
 }
