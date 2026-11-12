@@ -5,11 +5,13 @@ use std::fs;
 use anyhow::{Context, Result, bail};
 use betteroffice_pptx::{MAX_SLIDE_DIM, MAX_SLIDE_PIXELS, Presentation, RenderOptions};
 
-use super::ConversionRequest;
 use super::fonts::register_system_fonts;
+use super::{ConversionOutput, ConversionRequest};
+use crate::progress::Progress;
+use crate::size::SourceSize;
 
 /// Renders an OOXML presentation without launching an external application.
-pub fn convert(request: &ConversionRequest) -> Result<Vec<std::path::PathBuf>> {
+pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
     let bytes = fs::read(&request.input)
         .with_context(|| format!("failed to read presentation '{}'", request.input.display()))?;
     let mut presentation = Presentation::open(&bytes).with_context(|| {
@@ -39,8 +41,17 @@ pub fn convert(request: &ConversionRequest) -> Result<Vec<std::path::PathBuf>> {
     }
     drop(first_slide);
 
-    let scale = render_scale(base_width, base_height, request.resolution);
-    let mut writer = request.output.writer(page_count, request.resolution)?;
+    let source = SourceSize::from_css_pixels(f64::from(base_width), f64::from(base_height))
+        .map_err(anyhow::Error::msg)
+        .context("the native slide reports invalid physical dimensions")?;
+    let resolution = request
+        .size
+        .resolve(source)
+        .map_err(anyhow::Error::msg)
+        .context("failed to derive an output size from the native slide dimensions")?;
+    let scale = render_scale(base_width, base_height, resolution);
+    let mut writer = request.output.writer(page_count, resolution)?;
+    let progress = Progress::new(page_count);
 
     for index in 0..page_count {
         let rendered = presentation
@@ -62,15 +73,17 @@ pub fn convert(request: &ConversionRequest) -> Result<Vec<std::path::PathBuf>> {
         writer
             .write_page(index, &rendered.bytes)
             .with_context(|| format!("failed to write slide {}", index + 1))?;
+        progress.advance(index + 1, writer.page_path(index));
     }
 
-    writer.finish()
+    let files = writer.finish()?;
+    Ok(ConversionOutput { files, resolution })
 }
 
 /// Chooses a render scale that covers the target size without exceeding the
 /// backend's surface limits. Any remaining size difference is handled by the
 /// output writer's resampler.
-fn render_scale(base_width: f32, base_height: f32, target: crate::cli::Resolution) -> f32 {
+fn render_scale(base_width: f32, base_height: f32, target: crate::size::Resolution) -> f32 {
     let base_width = f64::from(base_width);
     let base_height = f64::from(base_height);
     let desired =
@@ -87,7 +100,7 @@ fn render_scale(base_width: f32, base_height: f32, target: crate::cli::Resolutio
 #[cfg(test)]
 mod tests {
     use super::render_scale;
-    use crate::cli::Resolution;
+    use crate::size::Resolution;
 
     #[test]
     fn render_scale_covers_target_without_upscaling_small_targets() {

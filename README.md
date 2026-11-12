@@ -26,6 +26,13 @@ ppt2images slides.pptx
 # Choose an output directory and exact image size
 ppt2images slides.pptx -o frames -r 3840x2160
 
+# Preserve the slide aspect ratio from one dimension
+ppt2images slides.pptx -o frames --width 1920
+ppt2images slides.pptx -o frames --height 1080
+
+# Render at 150 DPI using the slide's physical size
+ppt2images slides.pptx -o frames --dpi 150
+
 # Use LibreOffice for maximum layout fidelity
 ppt2images slides.pptx --backend libreoffice -o frames
 
@@ -47,7 +54,10 @@ Usage: ppt2images [OPTIONS] <INPUT>
 
   <INPUT>                                  Input presentation
   -o, --output-dir <DIR>                   Output directory [default: output]
-  -r, --resolution <WIDTHxHEIGHT>          Exact output size [default: 1920x1080]
+  -r, --resolution <WIDTHxHEIGHT>          Exact output size
+      --width <PX>                         Width; height follows slide aspect ratio
+      --height <PX>                        Height; width follows slide aspect ratio
+      --dpi <DPI>                          Output DPI from physical slide size
       --page-format <FORMAT>               Page-number pattern [default: {page:04}]
       --start-index <N>                    First page number [default: 0]
   -b, --backend <auto|native|libreoffice|powerpoint>
@@ -57,13 +67,45 @@ Usage: ppt2images [OPTIONS] <INPUT>
   -V, --version                            Show version
 ```
 
+The four size options `--resolution`, `--width`, `--height`, and `--dpi` are
+mutually exclusive. When none is supplied, `1920x1080` is used.
+
 ### Resolution
 
-`--resolution` sets the exact pixel dimensions of every output image. Slides
-are scaled to those dimensions even when the target aspect ratio differs from
-the slide aspect ratio.
+There are four ways to select the output size:
 
-Limits: at most 16,384 pixels per side and 67,108,864 pixels per image.
+- `--resolution 3840x2160` sets exact pixel dimensions. Slides are scaled to
+  those dimensions even when the target aspect ratio differs from the slide
+  aspect ratio.
+- `--width 1920` sets the width and derives the height from the slide aspect
+  ratio.
+- `--height 1080` sets the height and derives the width from the slide aspect
+  ratio.
+- `--dpi 150` multiplies the slide's physical dimensions by the requested DPI.
+  For example, a 13.333 by 7.5 inch widescreen slide at 150 DPI produces
+  `2000x1125` pixels.
+
+Derived dimensions are rounded to the nearest pixel and are at least one
+pixel. Limits: at most 16,384 pixels per side, 67,108,864 pixels per image,
+and 2,400 DPI.
+
+### Progress
+
+After each slide is rendered and staged, an `Exported` line reports the count,
+percentage, and output file name on stderr:
+
+```text
+Converting 'slides.pptx' with native (size: 1920px wide, auto height)
+Exported 1/25 (4%): 0000.png
+Exported 2/25 (8%): 0001.png
+...
+Exported 25/25 (100%): 0024.png
+Wrote 25 images at 1920x1080 to 'frames'
+```
+
+The PowerPoint backend streams its export count from the COM automation
+script, so progress also appears while PowerPoint is still exporting. The final
+`Wrote` summary is printed on stdout; progress and warnings use stderr.
 
 ### Page numbering
 
@@ -118,8 +160,8 @@ lines, shadows, and grouped content.
 Native text uses one Unicode-capable system font family as the fallback for
 fonts named in the presentation. It prefers Noto Sans CJK, Source Han Sans,
 Droid Sans Fallback, Microsoft YaHei, PingFang SC, Segoe UI, Arial, Liberation
-Sans, and DejaVu Sans. Set `PPT2IMAGES_NATIVE_FONT` to a `.ttf`, `.otf`, or TrueType collection to
-override this choice.
+Sans, and DejaVu Sans. Set `PPT2IMAGES_NATIVE_FONT` to a `.ttf`, `.otf`, or
+TrueType collection to override this choice.
 
 Native output is a static slide image. Unsupported media or images that cannot
 be decoded are skipped with a warning instead of failing the whole deck. To

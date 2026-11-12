@@ -12,7 +12,9 @@ use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 
-use super::ConversionRequest;
+use super::{ConversionOutput, ConversionRequest};
+use crate::progress::Progress;
+use crate::size::SourceSize;
 
 /// Finds LibreOffice without starting it.
 pub fn find() -> Option<PathBuf> {
@@ -63,7 +65,7 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Converts with LibreOffice to PDF and rasterizes every page in Rust.
-pub fn convert(request: &ConversionRequest) -> Result<Vec<PathBuf>> {
+pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
     let executable = find().context(
         "LibreOffice was not found; install it or set PPT2IMAGES_SOFFICE to the soffice executable",
     )?;
@@ -138,7 +140,7 @@ fn find_pdf(directory: &Path) -> Option<PathBuf> {
     }
 }
 
-fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<Vec<PathBuf>> {
+fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOutput> {
     let pdf = Pdf::new(bytes.to_vec())
         .map_err(|error| anyhow::anyhow!("LibreOffice produced an unreadable PDF: {error:?}"))?;
     let pages = pdf.pages();
@@ -146,7 +148,19 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<Vec<PathBuf>>
         bail!("LibreOffice produced a PDF with no pages");
     }
 
-    let mut writer = request.output.writer(pages.len(), request.resolution)?;
+    let (first_width, first_height) = pages[0].render_dimensions();
+    let source = SourceSize::from_points(f64::from(first_width), f64::from(first_height))
+        .map_err(anyhow::Error::msg)
+        .context("the PDF reports invalid physical dimensions")?;
+    let resolution = request
+        .size
+        .resolve(source)
+        .map_err(anyhow::Error::msg)
+        .context("failed to derive an output size from the PDF page dimensions")?;
+
+    let page_count = pages.len();
+    let mut writer = request.output.writer(page_count, resolution)?;
+    let progress = Progress::new(page_count);
     let cache = RenderCache::new();
     let interpreter_settings = InterpreterSettings::default();
     let render_settings = RenderSettings::default();
@@ -164,8 +178,8 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<Vec<PathBuf>>
             &PixmapSettings {
                 // Render one extra pixel per axis to avoid a zero-sized surface
                 // from floating-point truncation at very small resolutions.
-                x_scale: (request.resolution.width as f32 + 1.0) / page_width,
-                y_scale: (request.resolution.height as f32 + 1.0) / page_height,
+                x_scale: (resolution.width as f32 + 1.0) / page_width,
+                y_scale: (resolution.height as f32 + 1.0) / page_height,
                 bg_color: WHITE,
             },
         );
@@ -175,8 +189,10 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<Vec<PathBuf>>
         writer
             .write_page(index, &png)
             .with_context(|| format!("failed to write slide {}", index + 1))?;
+        progress.advance(index + 1, writer.page_path(index));
     }
-    writer.finish()
+    let files = writer.finish()?;
+    Ok(ConversionOutput { files, resolution })
 }
 
 fn file_url(path: &Path) -> Result<String> {

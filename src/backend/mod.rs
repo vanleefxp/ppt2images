@@ -4,9 +4,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::cli::{Backend, Resolution};
+use crate::cli::Backend;
 use crate::input::{PresentationKind, detect_kind};
 use crate::output::OutputSpec;
+use crate::size::{Resolution, SizeSpec};
 
 pub mod fonts;
 pub mod libreoffice;
@@ -18,14 +19,23 @@ pub mod powerpoint;
 pub struct ConversionRequest {
     /// Absolute input path.
     pub input: std::path::PathBuf,
-    /// Requested output size.
-    pub resolution: Resolution,
+    /// Requested output size selection.
+    pub size: SizeSpec,
     /// Output naming and publication options.
     pub output: OutputSpec,
 }
 
+/// The result of one successful conversion.
+#[derive(Debug)]
+pub struct ConversionOutput {
+    /// Published output files in slide order.
+    pub files: Vec<std::path::PathBuf>,
+    /// Exact output dimensions used for every slide.
+    pub resolution: Resolution,
+}
+
 /// Converts a presentation with the requested backend.
-pub fn convert(backend: Backend, request: &ConversionRequest) -> Result<Vec<std::path::PathBuf>> {
+pub fn convert(backend: Backend, request: &ConversionRequest) -> Result<ConversionOutput> {
     match backend {
         Backend::Auto => unreachable!("auto backend must be resolved before dispatch"),
         Backend::Native => native::convert(request),

@@ -98,7 +98,12 @@ fn fixture() -> (TempDir, PathBuf) {
     (directory, input)
 }
 
-fn run(input: &Path, output: &Path, extra: &[&str]) -> std::process::Output {
+fn run_with_size(
+    input: &Path,
+    output: &Path,
+    size_args: &[&str],
+    extra: &[&str],
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ppt2images"));
     command
         .arg(input)
@@ -106,10 +111,20 @@ fn run(input: &Path, output: &Path, extra: &[&str]) -> std::process::Output {
         .arg("native")
         .arg("--output-dir")
         .arg(output)
-        .arg("--resolution")
-        .arg("320x180")
+        .args(size_args)
         .args(extra);
     command.output().unwrap()
+}
+
+fn run(input: &Path, output: &Path, extra: &[&str]) -> std::process::Output {
+    run_with_size(input, output, &["--resolution", "320x180"], extra)
+}
+
+fn assert_image_size(path: &Path, width: u32, height: u32) {
+    assert_eq!(
+        image::open(path).unwrap().to_rgb8().dimensions(),
+        (width, height)
+    );
 }
 
 #[test]
@@ -130,15 +145,12 @@ fn converts_a_pptx_with_custom_numbering() {
     let second = output.join("slide-003.png");
     assert!(first.is_file());
     assert!(second.is_file());
-    assert_eq!(
-        image::open(first).unwrap().to_rgb8().dimensions(),
-        (320, 180)
-    );
-    assert_eq!(
-        image::open(second).unwrap().to_rgb8().dimensions(),
-        (320, 180)
-    );
+    assert_image_size(&first, 320, 180);
+    assert_image_size(&second, 320, 180);
     assert!(!output.join("0000.png").exists());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("Exported 1/2 (50%)"), "stderr: {stderr}");
+    assert!(stderr.contains("Exported 2/2 (100%)"), "stderr: {stderr}");
     let names = fs::read_dir(&output)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -175,4 +187,40 @@ fn overwrite_publishes_a_complete_new_set() {
     for name in ["0000.png", "0001.png"] {
         assert!(image::open(output.join(name)).is_ok());
     }
+}
+
+#[test]
+fn derives_height_from_width_and_width_from_height() {
+    let (directory, input) = fixture();
+
+    let width_output = directory.path().join("width");
+    let result = run_with_size(&input, &width_output, &["--width", "320"], &[]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_image_size(&width_output.join("0000.png"), 320, 180);
+
+    let height_output = directory.path().join("height");
+    let result = run_with_size(&input, &height_output, &["--height", "180"], &[]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_image_size(&height_output.join("0000.png"), 320, 180);
+}
+
+#[test]
+fn derives_size_from_dpi() {
+    let (directory, input) = fixture();
+    let output = directory.path().join("dpi");
+    let result = run_with_size(&input, &output, &["--dpi", "24"], &[]);
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_image_size(&output.join("0000.png"), 320, 180);
 }

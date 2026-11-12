@@ -10,8 +10,8 @@ use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageEncoder, ImageFormat, RgbImage};
 use tempfile::{Builder, TempDir};
 
-use crate::cli::Resolution;
 use crate::page_format::PageFormat;
+use crate::size::Resolution;
 
 /// User-selected output options shared by all backends.
 #[derive(Clone, Debug)]
@@ -116,6 +116,11 @@ impl OutputWriter {
             staging,
             written: vec![false; page_count],
         })
+    }
+
+    /// Returns the final path planned for one zero-based page index.
+    pub fn page_path(&self, index: usize) -> Option<&Path> {
+        self.destinations.get(index).map(PathBuf::as_path)
     }
 
     /// Normalizes and stages one rendered PNG. `index` is zero-based.
@@ -235,8 +240,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::OutputSpec;
-    use crate::cli::Resolution;
     use crate::page_format::PageFormat;
+    use crate::size::Resolution;
 
     fn sample_png(width: u32, height: u32) -> Vec<u8> {
         let image = RgbaImage::from_pixel(width, height, image::Rgba([12, 34, 56, 255]));

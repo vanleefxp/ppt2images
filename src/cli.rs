@@ -2,74 +2,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::page_format::{DEFAULT_PATTERN, PageFormat};
-
-/// The largest width or height accepted for one output image.
-pub const MAX_DIMENSION: u32 = 16_384;
-/// The largest pixel count accepted for one output image.
-pub const MAX_PIXELS: u64 = 67_108_864;
-
-/// Output image dimensions in pixels.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Resolution {
-    /// Image width in pixels.
-    pub width: u32,
-    /// Image height in pixels.
-    pub height: u32,
-}
-
-impl Resolution {
-    /// Validates and creates a resolution.
-    pub fn new(width: u32, height: u32) -> Result<Self, String> {
-        if width == 0 || height == 0 {
-            return Err("resolution width and height must be greater than zero".to_owned());
-        }
-        if width > MAX_DIMENSION || height > MAX_DIMENSION {
-            return Err(format!(
-                "resolution must not exceed {MAX_DIMENSION} pixels per side"
-            ));
-        }
-        let pixels = u64::from(width) * u64::from(height);
-        if pixels > MAX_PIXELS {
-            return Err(format!(
-                "resolution contains {pixels} pixels; the maximum is {MAX_PIXELS}"
-            ));
-        }
-        Ok(Self { width, height })
-    }
-
-    /// Parses a `WIDTHxHEIGHT` value.
-    pub fn parse(value: &str) -> Result<Self, String> {
-        let trimmed = value.trim();
-        let separator = trimmed
-            .char_indices()
-            .find(|(_, character)| matches!(character, 'x' | 'X' | '*' | '×'))
-            .map(|(index, character)| (index, character.len_utf8()));
-        let Some((index, separator_len)) = separator else {
-            return Err("resolution must use WIDTHxHEIGHT, for example 1920x1080".to_owned());
-        };
-        let width_text = trimmed[..index].trim();
-        let height_text = trimmed[index + separator_len..].trim();
-        if width_text.is_empty() || height_text.is_empty() {
-            return Err("resolution must include both width and height".to_owned());
-        }
-        let width = width_text
-            .parse::<u32>()
-            .map_err(|_| format!("invalid resolution width '{width_text}'"))?;
-        let height = height_text
-            .parse::<u32>()
-            .map_err(|_| format!("invalid resolution height '{height_text}'"))?;
-        Self::new(width, height)
-    }
-}
-
-impl std::fmt::Display for Resolution {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}x{}", self.width, self.height)
-    }
-}
+use crate::size::{Resolution, SizeSpec, parse_dimension, parse_dpi};
 
 /// Conversion engine selected by the user.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -103,6 +39,7 @@ impl Backend {
 #[derive(Debug, Parser)]
 #[command(
     name = "ppt2images",
+    group(ArgGroup::new("size").args(["resolution", "width", "height", "dpi"])),
     version,
     about = "Convert PowerPoint slides to numbered PNG images",
     long_about = "Convert a presentation into one PNG per slide.\n\n\
@@ -110,7 +47,9 @@ impl Backend {
         The LibreOffice backend uses an installed LibreOffice to produce a PDF \
         and rasterizes it in Rust. The Microsoft PowerPoint backend uses COM \
         automation on Windows. In auto mode, PPTX-family inputs use the native \
-        backend and legacy inputs use LibreOffice or PowerPoint."
+        backend and legacy inputs use LibreOffice or PowerPoint.\n\n\
+        Output size can be exact (--resolution), driven by one pixel dimension \
+        (--width or --height), or based on physical size and DPI (--dpi)."
 )]
 pub struct Cli {
     /// Presentation to convert (.ppt, .pptx, .pptm, .ppsx, .odp, and related formats).
@@ -121,15 +60,28 @@ pub struct Cli {
     #[arg(short, long, value_name = "DIR", default_value = "output")]
     pub output_dir: PathBuf,
 
-    /// Output size in pixels, written as WIDTHxHEIGHT.
+    /// Exact output size in pixels, written as WIDTHxHEIGHT.
+    ///
+    /// When no size option is supplied, 1920x1080 is used.
     #[arg(
         short,
         long,
         value_name = "WIDTHxHEIGHT",
-        default_value = "1920x1080",
         value_parser = Resolution::parse
     )]
-    pub resolution: Resolution,
+    pub resolution: Option<Resolution>,
+
+    /// Output width in pixels; the height follows the slide aspect ratio.
+    #[arg(long, value_name = "PX", value_parser = parse_dimension)]
+    pub width: Option<u32>,
+
+    /// Output height in pixels; the width follows the slide aspect ratio.
+    #[arg(long, value_name = "PX", value_parser = parse_dimension)]
+    pub height: Option<u32>,
+
+    /// Output dots per inch, based on the slide's physical dimensions.
+    #[arg(long, value_name = "DPI", value_parser = parse_dpi)]
+    pub dpi: Option<u32>,
 
     /// Page-number pattern: {page:04}, {:04}, %04d, or the shorthand 0000.
     #[arg(
@@ -153,11 +105,29 @@ pub struct Cli {
     pub overwrite: bool,
 }
 
+impl Cli {
+    /// Resolves the selected size option, defaulting to 1920x1080.
+    pub fn size_spec(&self) -> SizeSpec {
+        if let Some(resolution) = self.resolution {
+            SizeSpec::Exact(resolution)
+        } else if let Some(width) = self.width {
+            SizeSpec::Width(width)
+        } else if let Some(height) = self.height {
+            SizeSpec::Height(height)
+        } else if let Some(dpi) = self.dpi {
+            SizeSpec::Dpi(dpi)
+        } else {
+            SizeSpec::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
 
-    use super::{Backend, Cli, MAX_DIMENSION, Resolution};
+    use super::{Backend, Cli};
+    use crate::size::{DEFAULT_RESOLUTION, Resolution, SizeSpec};
 
     #[test]
     fn verifies_cli_shape() {
@@ -165,62 +135,51 @@ mod tests {
     }
 
     #[test]
-    fn parses_resolutions() {
-        assert_eq!(
-            Resolution::parse("1920x1080").unwrap(),
-            Resolution {
-                width: 1920,
-                height: 1080
-            }
-        );
-        assert_eq!(
-            Resolution::parse(" 800 X 600 ").unwrap(),
-            Resolution {
-                width: 800,
-                height: 600
-            }
-        );
-        assert_eq!(
-            Resolution::parse("3840*2160").unwrap(),
-            Resolution {
-                width: 3840,
-                height: 2160
-            }
-        );
-        assert_eq!(
-            Resolution::parse("1280×720").unwrap(),
-            Resolution {
-                width: 1280,
-                height: 720
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_resolutions() {
-        assert!(Resolution::parse("1920").is_err());
-        assert!(Resolution::parse("x1080").is_err());
-        assert!(Resolution::parse("1920x").is_err());
-        assert!(Resolution::parse("0x1080").is_err());
-        assert!(Resolution::parse("1920x0").is_err());
-        assert!(Resolution::parse("1920x1080x2").is_err());
-        assert!(Resolution::parse("1920.5x1080").is_err());
-        assert!(Resolution::new(MAX_DIMENSION + 1, 100).is_err());
-        assert!(Resolution::new(MAX_DIMENSION, MAX_DIMENSION).is_err());
-    }
-
-    #[test]
-    fn backend_has_expected_default() {
+    fn defaults_to_auto_backend_and_exact_size() {
         let cli = Cli::try_parse_from(["ppt2images", "deck.pptx"]).unwrap();
         assert_eq!(cli.backend, Backend::Auto);
         assert_eq!(cli.start_index, 0);
-        assert_eq!(
-            cli.resolution,
-            Resolution {
-                width: 1920,
-                height: 1080
-            }
-        );
+        assert_eq!(cli.size_spec(), SizeSpec::Exact(DEFAULT_RESOLUTION));
         assert_eq!(cli.page_format.format(0), "0000");
+    }
+
+    #[test]
+    fn accepts_one_size_selector() {
+        let exact = Cli::try_parse_from(["ppt2images", "deck.pptx", "-r", "800x600"]).unwrap();
+        assert_eq!(
+            exact.size_spec(),
+            SizeSpec::Exact(Resolution {
+                width: 800,
+                height: 600
+            })
+        );
+
+        let width = Cli::try_parse_from(["ppt2images", "deck.pptx", "--width", "1280"]).unwrap();
+        assert_eq!(width.size_spec(), SizeSpec::Width(1280));
+
+        let height = Cli::try_parse_from(["ppt2images", "deck.pptx", "--height", "720"]).unwrap();
+        assert_eq!(height.size_spec(), SizeSpec::Height(720));
+
+        let dpi = Cli::try_parse_from(["ppt2images", "deck.pptx", "--dpi", "150"]).unwrap();
+        assert_eq!(dpi.size_spec(), SizeSpec::Dpi(150));
+    }
+
+    #[test]
+    fn rejects_conflicting_size_selectors() {
+        assert!(
+            Cli::try_parse_from([
+                "ppt2images",
+                "deck.pptx",
+                "--resolution",
+                "800x600",
+                "--width",
+                "800",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["ppt2images", "deck.pptx", "--width", "800", "--dpi", "96",])
+                .is_err()
+        );
     }
 }
