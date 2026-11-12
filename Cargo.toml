@@ -14,3 +14,6 @@ fontdb = "0.24"
 hayro = "0.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3.27"
+
+[dev-dependencies]
+zip = { version = "8.6", default-features = false }

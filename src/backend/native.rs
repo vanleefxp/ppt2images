@@ -78,7 +78,9 @@ fn render_scale(base_width: f32, base_height: f32, target: crate::cli::Resolutio
     let max_by_dimension =
         (f64::from(MAX_SLIDE_DIM) / base_width).min(f64::from(MAX_SLIDE_DIM) / base_height);
     let max_by_pixels = (MAX_SLIDE_PIXELS as f64 / (base_width * base_height)).sqrt();
-    let maximum = max_by_dimension.min(max_by_pixels).max(1.0);
+    // The raster backend rounds surface dimensions up, so keep a small margin
+    // below the advertised limits instead of landing exactly on them.
+    let maximum = (max_by_dimension.min(max_by_pixels) * 0.999).max(1.0);
     desired.clamp(1.0, maximum) as f32
 }
 
@@ -96,5 +98,14 @@ mod tests {
             render_scale(1280.0, 720.0, Resolution::new(640, 480).unwrap()),
             1.0
         );
+    }
+
+    #[test]
+    fn render_scale_stays_inside_backend_surface_limits() {
+        let scale = render_scale(1280.0, 720.0, Resolution::new(8000, 4500).unwrap());
+        let width = (1280.0_f64 * f64::from(scale)).ceil() as u64;
+        let height = (720.0_f64 * f64::from(scale)).ceil() as u64;
+        assert!(width * height <= betteroffice_pptx::MAX_SLIDE_PIXELS);
+        assert!(width <= u64::from(betteroffice_pptx::MAX_SLIDE_DIM));
     }
 }

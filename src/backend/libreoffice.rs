@@ -162,8 +162,10 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<Vec<PathBuf>>
             &interpreter_settings,
             &render_settings,
             &PixmapSettings {
-                x_scale: request.resolution.width as f32 / page_width,
-                y_scale: request.resolution.height as f32 / page_height,
+                // Render one extra pixel per axis to avoid a zero-sized surface
+                // from floating-point truncation at very small resolutions.
+                x_scale: (request.resolution.width as f32 + 1.0) / page_width,
+                y_scale: (request.resolution.height as f32 + 1.0) / page_height,
                 bg_color: WHITE,
             },
         );

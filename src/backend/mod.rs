@@ -16,7 +16,7 @@ pub mod powerpoint;
 /// Everything a backend needs to convert one presentation.
 #[derive(Clone, Debug)]
 pub struct ConversionRequest {
-    /// Canonical input path.
+    /// Absolute input path.
     pub input: std::path::PathBuf,
     /// Requested output size.
     pub resolution: Resolution,
@@ -90,7 +90,7 @@ fn ensure_open_xml(kind: PresentationKind, backend: Backend) -> Result<()> {
     }
 }
 
-/// Reads and canonicalizes the input path.
+/// Validates the input and converts it to an absolute path.
 pub fn prepare_input(path: &Path) -> Result<std::path::PathBuf> {
     if !path.exists() {
         bail!("input file '{}' does not exist", path.display());
