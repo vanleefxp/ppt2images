@@ -47,8 +47,9 @@ pub fn register_system_fonts(presentation: &mut Presentation) -> Result<()> {
     }
 
     let database = load_database();
-    let regular_face = query_face(&database, Weight::NORMAL)
-        .context("no usable system font was found for native rendering")?;
+    let regular_face = query_face(&database, Weight::NORMAL).context(
+        "no usable system font was found for native rendering; set PPT2IMAGES_NATIVE_FONT to a .ttf or .otf file",
+    )?;
     let bold_face = query_face(&database, Weight::BOLD).unwrap_or(regular_face);
     let regular = face_bytes(&database, regular_face)
         .context("failed to read the selected regular system font")?;

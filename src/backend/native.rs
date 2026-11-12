@@ -10,14 +10,14 @@ use super::fonts::register_system_fonts;
 
 /// Renders an OOXML presentation without launching an external application.
 pub fn convert(request: &ConversionRequest) -> Result<Vec<std::path::PathBuf>> {
-    let input = request
-        .input
-        .to_str()
-        .context("input path is not valid UTF-8")?;
     let bytes = fs::read(&request.input)
-        .with_context(|| format!("failed to read presentation '{input}'"))?;
-    let mut presentation = Presentation::open(&bytes)
-        .with_context(|| format!("failed to parse OOXML presentation '{input}'"))?;
+        .with_context(|| format!("failed to read presentation '{}'", request.input.display()))?;
+    let mut presentation = Presentation::open(&bytes).with_context(|| {
+        format!(
+            "failed to parse OOXML presentation '{}'",
+            request.input.display()
+        )
+    })?;
     let page_count = presentation.slides().len();
     if page_count == 0 {
         bail!("the presentation contains no slides");

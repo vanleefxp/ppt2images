@@ -104,7 +104,9 @@ file already exists, conversion fails unless `--overwrite` is passed.
   installed.
 
 Choose a backend explicitly when you need a particular fidelity/runtime
-tradeoff.
+tradeoff. Backend aliases are `rust` for `native`, `lo` and `libre-office` for
+`libreoffice`, and `ppt`, `microsoft-powerpoint`, and `ms-powerpoint` for
+`powerpoint`. Values are case-insensitive.
 
 ### Native
 
@@ -116,13 +118,14 @@ lines, shadows, and grouped content.
 Native text uses one Unicode-capable system font family as the fallback for
 fonts named in the presentation. It prefers Noto Sans CJK, Source Han Sans,
 Droid Sans Fallback, Microsoft YaHei, PingFang SC, Segoe UI, Arial, Liberation
-Sans, and DejaVu Sans. Set `PPT2IMAGES_NATIVE_FONT` to a font file to override
-this choice.
+Sans, and DejaVu Sans. Set `PPT2IMAGES_NATIVE_FONT` to a `.ttf`, `.otf`, or TrueType collection to
+override this choice.
 
 Native output is a static slide image. Unsupported media or images that cannot
-be decoded are skipped with a warning instead of failing the whole deck. For
-pixel-perfect fidelity or unusual content, use the LibreOffice or PowerPoint
-backend.
+be decoded are skipped with a warning instead of failing the whole deck. To
+bound memory use, native rendering is capped at 16 megapixels internally and
+resampled when a larger image is requested. For pixel-perfect fidelity or
+unusual content, use the LibreOffice or PowerPoint backend.
 
 ### LibreOffice
 
