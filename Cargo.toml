@@ -1,0 +1,16 @@
+[package]
+name = "ppt2images"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Convert PowerPoint presentations to numbered PNG images"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+betteroffice-pptx = { version = "0.5.1", features = ["raster"] }
+clap = { version = "4.6", features = ["derive"] }
+fontdb = "0.24"
+hayro = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3.27"
