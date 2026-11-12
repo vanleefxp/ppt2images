@@ -97,7 +97,7 @@ percentage, and the image currently being staged:
 ```text
 Converting 'slides.pptx' with native (size: 1920px wide, auto height)
 00:00:03 [████████████████░░░░] 20/25 (80%) 0019.png
-Wrote 25 images at 1920x1080 to 'frames'
+Wrote 25 images at 1920x1080 to 'frames' in 2.34s
 ```
 
 The bar is drawn with `indicatif`, the progress-bar library beneath
@@ -107,8 +107,8 @@ hidden so logs stay clean.
 
 The PowerPoint backend streams its export count from the COM automation
 script, so the bar also advances while PowerPoint is still exporting. Warnings
-temporarily suspend and redraw the bar. The final `Wrote` summary is printed on
-stdout.
+temporarily suspend and redraw the bar. The final `Wrote` summary, including
+total elapsed time, is printed on stdout.
 
 ### Page numbering
 
@@ -222,11 +222,16 @@ for legacy and OpenDocument inputs.
 
 ## Development
 
+The `just` command runner is required for these recipes.
+
 ```sh
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+just lint
+just test
 ```
+
+`just lint` runs `cargo fmt --all --check` followed by
+`cargo clippy --all-targets --all-features -- -D warnings`.
+`just test` runs `cargo test --all-targets`.
 
 The codebase does not suppress warnings with `#[allow(...)]`. Comments and
 commit messages are written in English.

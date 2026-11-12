@@ -148,6 +148,8 @@ fn converts_a_pptx_with_custom_numbering() {
     assert_image_size(&first, 320, 180);
     assert_image_size(&second, 320, 180);
     assert!(!output.join("0000.png").exists());
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains(" in "), "stdout: {stdout}");
     let names = fs::read_dir(&output)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
