@@ -165,7 +165,8 @@ fn collect_exports(directory: &Path) -> Result<Vec<PathBuf>> {
         let expected = format!("slide-{index:04}.png");
         if path
             .file_name()
-            .is_none_or(|name| name != expected.as_str())
+            .and_then(|name| name.to_str())
+            .is_none_or(|name| !name.eq_ignore_ascii_case(&expected))
         {
             bail!(
                 "PowerPoint produced an unexpected export set; expected '{expected}' but found '{}'",
