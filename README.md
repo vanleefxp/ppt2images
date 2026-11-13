@@ -33,6 +33,9 @@ ppt2images slides.pptx -o frames --height 1080
 # Render at 150 DPI using the slide's physical size
 ppt2images slides.pptx -o frames --dpi 150
 
+# Limit page workers to four; omit or use 0 for automatic parallelism
+ppt2images slides.pptx -o frames --jobs 4
+
 # Export selected pages: 1-3, page 6, and page 9 through the end
 ppt2images slides.pptx -o frames --pages '1-3,6,9-'
 
@@ -69,6 +72,7 @@ Usage: ppt2images [OPTIONS] <INPUT>
       --pages <RANGES>                     Pages to export; all pages by default
   -b, --backend <auto|native|libreoffice|powerpoint>
                                            Conversion backend [default: auto]
+  -j, --jobs <N>                           Page workers; 0 = automatic [default: 0]
       --overwrite                          Replace existing PNG files
   -h, --help                               Show help
   -V, --version                            Show version
@@ -95,6 +99,25 @@ There are four ways to select the output size:
 Derived dimensions are rounded to the nearest pixel and are at least one
 pixel. Limits: at most 16,384 pixels per side, 67,108,864 pixels per image,
 and 2,400 DPI.
+
+### Parallelism
+
+`--jobs N` controls how many pages are processed concurrently. `--jobs 0`, the
+default, uses up to eight workers based on available CPU parallelism. Use
+`--jobs 1` for strictly serial processing, or raise the value for very large
+decks and high resolutions.
+
+- The native backend renders slides in parallel, with each worker parsing its
+  own presentation instance because the renderer session is not thread-safe.
+- The LibreOffice backend still runs `soffice` once serially to produce the PDF,
+  but rasterizes PDF pages in parallel.
+- The PowerPoint COM export itself remains serial because PowerPoint automation
+  is single-instance. Its final image normalization and writing stage is
+  parallelized.
+
+Page output remains deterministic and is published in page order regardless of
+worker completion order. Parallelism increases memory use, especially at high
+resolutions; reduce `--jobs` if memory is constrained.
 
 ### Progress
 

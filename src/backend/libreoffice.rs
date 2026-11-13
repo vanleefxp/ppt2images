@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
 use hayro::hayro_interpret::InterpreterSettings;
@@ -13,6 +14,7 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 
 use super::{ConversionOutput, ConversionRequest};
+use crate::parallel;
 use crate::progress::Progress;
 use crate::size::SourceSize;
 
@@ -163,24 +165,24 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
         .resolve(request.output.start_index, pages.len())
         .map_err(anyhow::Error::msg)
         .context("invalid page selection")?;
-    let mut writer = request.output.writer(&plan.page_numbers, resolution)?;
+    let writer = request.output.writer(&plan.page_numbers, resolution)?;
     let progress = Progress::new(plan.len());
-    let cache = RenderCache::new();
-    let interpreter_settings = InterpreterSettings::default();
-    let render_settings = RenderSettings::default();
+    let completed = AtomicUsize::new(0);
 
-    for (output_index, &page_index) in plan.slide_indices.iter().enumerate() {
+    parallel::for_each(request.jobs, plan.len(), |output_index| {
         let page_number = plan.page_numbers[output_index];
-        let page = &pages[page_index];
+        let page = &pages[plan.slide_indices[output_index]];
         let (page_width, page_height) = page.render_dimensions();
         if page_width <= 0.0 || page_height <= 0.0 {
             bail!("PDF page {page_number} has an invalid size");
         }
+        let cache = RenderCache::new();
+        let interpreter_settings = InterpreterSettings::default();
         let pixmap = hayro::render(
             page,
             &cache,
             &interpreter_settings,
-            &render_settings,
+            &RenderSettings::default(),
             &PixmapSettings {
                 // Render one extra pixel per axis to avoid a zero-sized surface
                 // from floating-point truncation at very small resolutions.
@@ -195,8 +197,10 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
         writer
             .write_page(output_index, &png)
             .with_context(|| format!("failed to write page {page_number}"))?;
-        progress.advance(output_index + 1, writer.page_path(output_index));
-    }
+        let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+        progress.advance(done, writer.page_path(output_index));
+        Ok(())
+    })?;
     let files = writer.finish()?;
     Ok(ConversionOutput { files, resolution })
 }

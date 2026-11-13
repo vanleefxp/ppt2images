@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{ConversionOutput, ConversionRequest};
 use crate::page_selection::{PagePlan, PageSelection};
+use crate::parallel;
 use crate::progress::Progress;
 use crate::size::{Resolution, SizeSpec, SourceSize};
 
@@ -163,15 +164,17 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
     }
 
     eprintln!("Finalizing {} exported images", exported.len());
-    let mut writer = request.output.writer(&plan.page_numbers, resolution)?;
-    for (index, path) in exported.iter().enumerate() {
+    let writer = request.output.writer(&plan.page_numbers, resolution)?;
+    parallel::for_each(request.jobs, plan.len(), |index| {
         let page_number = plan.page_numbers[index];
+        let path = &exported[index];
         let bytes = fs::read(path)
             .with_context(|| format!("failed to read exported image '{}'", path.display()))?;
         writer
             .write_page(index, &bytes)
             .with_context(|| format!("failed to write page {page_number}"))?;
-    }
+        Ok(())
+    })?;
     let files = writer.finish()?;
     Ok(ConversionOutput { files, resolution })
 }

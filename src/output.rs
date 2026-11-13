@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use image::codecs::png::PngEncoder;
@@ -40,7 +41,7 @@ pub struct OutputWriter {
     resolution: Resolution,
     overwrite: bool,
     staging: TempDir,
-    written: Vec<bool>,
+    written: Vec<AtomicBool>,
 }
 
 impl OutputWriter {
@@ -108,7 +109,9 @@ impl OutputWriter {
             resolution,
             overwrite: spec.overwrite,
             staging,
-            written: vec![false; page_numbers.len()],
+            written: (0..page_numbers.len())
+                .map(|_| AtomicBool::new(false))
+                .collect(),
         })
     }
 
@@ -118,30 +121,38 @@ impl OutputWriter {
     }
 
     /// Normalizes and stages one rendered PNG. `index` is zero-based.
-    pub fn write_page(&mut self, index: usize, png_bytes: &[u8]) -> Result<()> {
+    pub fn write_page(&self, index: usize, png_bytes: &[u8]) -> Result<()> {
         if index >= self.destinations.len() {
             bail!(
                 "backend produced page index {index}, but only {} pages were planned",
                 self.destinations.len()
             );
         }
-        if self.written[index] {
+        if self.written[index].swap(true, Ordering::AcqRel) {
             bail!("backend produced page index {index} more than once");
         }
-        let file_name = self.destinations[index]
-            .file_name()
-            .context("planned output path has no file name")?;
-        let staged_path = self.staging.path().join(file_name);
-        let normalized = normalize_png(png_bytes, self.resolution)?;
-        fs::write(&staged_path, normalized)
-            .with_context(|| format!("failed to stage output page '{}'", staged_path.display()))?;
-        self.written[index] = true;
-        Ok(())
+        let write_result = (|| {
+            let file_name = self.destinations[index]
+                .file_name()
+                .context("planned output path has no file name")?;
+            let staged_path = self.staging.path().join(file_name);
+            let normalized = normalize_png(png_bytes, self.resolution)?;
+            fs::write(&staged_path, normalized)
+                .with_context(|| format!("failed to stage output page '{}'", staged_path.display()))
+        })();
+        if write_result.is_err() {
+            self.written[index].store(false, Ordering::Release);
+        }
+        write_result
     }
 
     /// Publishes every staged page to its final name.
     pub fn finish(self) -> Result<Vec<PathBuf>> {
-        if let Some(index) = self.written.iter().position(|written| !written) {
+        if let Some(index) = self
+            .written
+            .iter()
+            .position(|written| !written.load(Ordering::Acquire))
+        {
             bail!("backend did not produce output page {index}");
         }
         for (index, destination) in self.destinations.iter().enumerate() {
@@ -263,7 +274,7 @@ mod tests {
     fn publishes_pages_with_default_names_and_exact_size() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output
+        let writer = output
             .writer(&pages(2), Resolution::new(40, 30).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(20, 20)).unwrap();
@@ -282,7 +293,7 @@ mod tests {
     fn flattens_transparency_onto_white() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output
+        let writer = output
             .writer(&pages(1), Resolution::new(2, 2).unwrap())
             .unwrap();
         let image = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 0]));
@@ -313,7 +324,7 @@ mod tests {
         fs::write(directory.path().join("0001.png"), b"existing").unwrap();
         let mut output = spec(directory.path());
         output.overwrite = true;
-        let mut writer = output
+        let writer = output
             .writer(&pages(1), Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
@@ -325,7 +336,7 @@ mod tests {
     fn incomplete_output_is_not_published() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output
+        let writer = output
             .writer(&pages(2), Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
@@ -340,7 +351,7 @@ mod tests {
         let mut output = spec(directory.path());
         output.start_index = 5;
         output.page_format = PageFormat::parse("slide-{page:03}").unwrap();
-        let mut writer = output
+        let writer = output
             .writer(&[5, 6], Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
@@ -351,10 +362,27 @@ mod tests {
     }
 
     #[test]
+    fn supports_concurrent_page_writes() {
+        let directory = tempdir().unwrap();
+        let output = spec(directory.path());
+        let writer = output
+            .writer(&pages(2), Resolution::new(10, 10).unwrap())
+            .unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| writer.write_page(0, &sample_png(10, 10)).unwrap());
+            scope.spawn(|| writer.write_page(1, &sample_png(10, 10)).unwrap());
+        });
+        let files = writer.finish().unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(image::open(&files[0]).is_ok());
+        assert!(image::open(&files[1]).is_ok());
+    }
+
+    #[test]
     fn rejects_duplicate_and_out_of_range_pages() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
-        let mut writer = output
+        let writer = output
             .writer(&pages(1), Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();

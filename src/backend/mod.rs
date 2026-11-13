@@ -24,6 +24,8 @@ pub struct ConversionRequest {
     pub size: SizeSpec,
     /// Page ranges to export.
     pub selection: PageSelection,
+    /// Requested parallel worker count; zero means automatic.
+    pub jobs: usize,
     /// Output naming and publication options.
     pub output: OutputSpec,
 }

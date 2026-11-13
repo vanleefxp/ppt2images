@@ -26,12 +26,18 @@ const PREFERRED_FAMILIES: &[&str] = &[
     "DejaVu Sans",
 ];
 
-/// Registers a Unicode-capable font family with the native renderer.
+/// Font data loaded once and shared by parallel native renderers.
+pub struct NativeFonts {
+    regular: Vec<u8>,
+    bold: Option<Vec<u8>>,
+}
+
+/// Loads a Unicode-capable font family for the native renderer.
 ///
 /// Set `PPT2IMAGES_NATIVE_FONT` to a font file to override system discovery.
 /// TrueType collections are accepted; the selected face is extracted from the
 /// collection before registration.
-pub fn register_system_fonts(presentation: &mut Presentation) -> Result<()> {
+pub fn load_system_fonts() -> Result<NativeFonts> {
     if let Some(path) = std::env::var_os("PPT2IMAGES_NATIVE_FONT") {
         let path = Path::new(&path);
         let bytes = fs::read(path)
@@ -42,8 +48,10 @@ pub fn register_system_fonts(presentation: &mut Presentation) -> Result<()> {
                 path.display()
             )
         })?;
-        register_faces(presentation, &face, None)?;
-        return Ok(());
+        return Ok(NativeFonts {
+            regular: face,
+            bold: None,
+        });
     }
 
     let database = load_database();
@@ -58,8 +66,12 @@ pub fn register_system_fonts(presentation: &mut Presentation) -> Result<()> {
     } else {
         face_bytes(&database, bold_face)
     };
-    register_faces(presentation, &regular, bold.as_deref())?;
-    Ok(())
+    Ok(NativeFonts { regular, bold })
+}
+
+/// Registers the loaded font faces with one native renderer instance.
+pub fn register_fonts(presentation: &mut Presentation, fonts: &NativeFonts) -> Result<()> {
+    register_faces(presentation, &fonts.regular, fonts.bold.as_deref())
 }
 
 fn load_database() -> Database {

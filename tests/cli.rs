@@ -269,3 +269,29 @@ fn page_selection_uses_the_configured_start_index() {
     assert_image_size(&output.join("0006.png"), 320, 180);
     assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
 }
+
+#[test]
+fn serial_and_parallel_outputs_match() {
+    let (directory, input) = fixture();
+    let serial = directory.path().join("serial");
+    let parallel = directory.path().join("parallel");
+    let serial_result = run(&input, &serial, &["--jobs", "1"]);
+    let parallel_result = run(&input, &parallel, &["--jobs", "2"]);
+    assert!(
+        serial_result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&serial_result.stderr)
+    );
+    assert!(
+        parallel_result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&parallel_result.stderr)
+    );
+    for name in ["0001.png", "0002.png"] {
+        assert_eq!(
+            fs::read(serial.join(name)).unwrap(),
+            fs::read(parallel.join(name)).unwrap(),
+            "{name} differs"
+        );
+    }
+}

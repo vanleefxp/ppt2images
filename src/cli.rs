@@ -8,6 +8,9 @@ use crate::page_format::{DEFAULT_PATTERN, PageFormat};
 use crate::page_selection::PageSelection;
 use crate::size::{Resolution, SizeSpec, parse_dimension, parse_dpi};
 
+/// The largest worker count accepted on the command line.
+pub const MAX_JOBS: usize = 64;
+
 /// Conversion engine selected by the user.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Backend {
@@ -114,9 +117,25 @@ pub struct Cli {
     #[arg(short, long, value_enum, default_value_t = Backend::Auto, ignore_case = true)]
     pub backend: Backend,
 
+    /// Number of parallel page workers; 0 selects an automatic count.
+    #[arg(short = 'j', long, value_name = "N", default_value_t = 0, value_parser = parse_jobs)]
+    pub jobs: usize,
+
     /// Replace existing PNG files.
     #[arg(long)]
     pub overwrite: bool,
+}
+
+/// Parses a worker count where zero means automatic.
+pub fn parse_jobs(value: &str) -> Result<usize, String> {
+    let jobs = value
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("invalid worker count '{value}'"))?;
+    if jobs > MAX_JOBS {
+        return Err(format!("worker count must not exceed {MAX_JOBS}"));
+    }
+    Ok(jobs)
 }
 
 impl Cli {
@@ -162,6 +181,7 @@ mod tests {
         assert_eq!(cli.size_spec(), SizeSpec::Exact(DEFAULT_RESOLUTION));
         assert_eq!(cli.page_format.format(0), "0000");
         assert_eq!(cli.selection(), PageSelection::all());
+        assert_eq!(cli.jobs, 0);
     }
 
     #[test]
@@ -193,6 +213,15 @@ mod tests {
         assert_eq!(open.selection(), PageSelection::parse("-3").unwrap());
         let invalid = Cli::try_parse_from(["ppt2images", "deck.pptx", "--pages", "1-2-3"]);
         assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn parses_worker_counts() {
+        let auto = Cli::try_parse_from(["ppt2images", "deck.pptx"]).unwrap();
+        assert_eq!(auto.jobs, 0);
+        let four = Cli::try_parse_from(["ppt2images", "deck.pptx", "-j", "4"]).unwrap();
+        assert_eq!(four.jobs, 4);
+        assert!(Cli::try_parse_from(["ppt2images", "deck.pptx", "--jobs", "65"]).is_err());
     }
 
     #[test]

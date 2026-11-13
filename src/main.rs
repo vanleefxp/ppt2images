@@ -9,6 +9,7 @@ mod input;
 mod output;
 mod page_format;
 mod page_selection;
+mod parallel;
 mod progress;
 mod size;
 
@@ -49,6 +50,7 @@ fn run() -> Result<()> {
         input: input.clone(),
         size,
         selection,
+        jobs: cli.jobs,
         output,
     };
 
