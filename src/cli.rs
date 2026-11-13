@@ -14,8 +14,6 @@ pub const MAX_JOBS: usize = 64;
 /// Conversion engine selected by the user.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Backend {
-    /// Pick the best backend for the input on this machine.
-    Auto,
     /// Pure Rust PPTX renderer; no office suite required.
     #[value(alias = "rust")]
     Native,
@@ -31,7 +29,6 @@ impl Backend {
     /// A short user-facing name.
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Native => "native",
             Self::Libreoffice => "LibreOffice",
             Self::Powerpoint => "Microsoft PowerPoint",
@@ -113,9 +110,9 @@ pub struct Cli {
     )]
     pub pages: Option<PageSelection>,
 
-    /// Conversion backend.
-    #[arg(short, long, value_enum, default_value_t = Backend::Auto, ignore_case = true)]
-    pub backend: Backend,
+    /// Conversion backend; omitted means automatic selection.
+    #[arg(short, long, value_enum, ignore_case = true)]
+    pub backend: Option<Backend>,
 
     /// Number of parallel page workers; 0 selects an automatic count.
     #[arg(short = 'j', long, value_name = "N", default_value_t = 0, value_parser = parse_jobs)]
@@ -176,12 +173,18 @@ mod tests {
     #[test]
     fn defaults_to_auto_backend_and_exact_size() {
         let cli = Cli::try_parse_from(["ppt2images", "deck.pptx"]).unwrap();
-        assert_eq!(cli.backend, Backend::Auto);
+        assert_eq!(cli.backend, None);
         assert_eq!(cli.start_index, 1);
         assert_eq!(cli.size_spec(), SizeSpec::Exact(DEFAULT_RESOLUTION));
         assert_eq!(cli.page_format.format(0), "0000");
         assert_eq!(cli.selection(), PageSelection::all());
         assert_eq!(cli.jobs, 0);
+    }
+
+    #[test]
+    fn parses_an_explicit_backend() {
+        let cli = Cli::try_parse_from(["ppt2images", "deck.pptx", "--backend", "native"]).unwrap();
+        assert_eq!(cli.backend, Some(Backend::Native));
     }
 
     #[test]

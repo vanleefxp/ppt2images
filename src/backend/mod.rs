@@ -42,23 +42,22 @@ pub struct ConversionOutput {
 /// Converts a presentation with the requested backend.
 pub fn convert(backend: Backend, request: &ConversionRequest) -> Result<ConversionOutput> {
     match backend {
-        Backend::Auto => unreachable!("auto backend must be resolved before dispatch"),
         Backend::Native => native::convert(request),
         Backend::Libreoffice => libreoffice::convert(request),
         Backend::Powerpoint => powerpoint::convert(request),
     }
 }
 
-/// Resolves a user-requested backend and validates that it is usable.
-pub fn resolve(backend: Backend, input: &Path) -> Result<Backend> {
+/// Resolves an optional backend and validates that it is usable.
+pub fn resolve(backend: Option<Backend>, input: &Path) -> Result<Backend> {
     let kind = detect_kind(input)?;
     match backend {
-        Backend::Auto => resolve_auto(kind),
-        Backend::Native => {
+        None => resolve_auto(kind),
+        Some(Backend::Native) => {
             ensure_open_xml(kind, Backend::Native)?;
             Ok(Backend::Native)
         }
-        Backend::Libreoffice => {
+        Some(Backend::Libreoffice) => {
             if libreoffice::find().is_none() {
                 bail!(
                     "LibreOffice was not found; install it or set PPT2IMAGES_SOFFICE to the soffice executable"
@@ -66,7 +65,7 @@ pub fn resolve(backend: Backend, input: &Path) -> Result<Backend> {
             }
             Ok(Backend::Libreoffice)
         }
-        Backend::Powerpoint => {
+        Some(Backend::Powerpoint) => {
             if !cfg!(windows) {
                 bail!(
                     "the Microsoft PowerPoint backend requires Windows and an installed PowerPoint"
@@ -127,14 +126,14 @@ mod tests {
     #[test]
     fn auto_uses_native_for_ooxml() {
         assert_eq!(
-            resolve(Backend::Auto, Path::new("deck.pptx")).unwrap(),
+            resolve(None, Path::new("deck.pptx")).unwrap(),
             Backend::Native
         );
     }
 
     #[test]
     fn native_rejects_legacy_inputs() {
-        let error = resolve(Backend::Native, Path::new("deck.ppt")).unwrap_err();
+        let error = resolve(Some(Backend::Native), Path::new("deck.ppt")).unwrap_err();
         assert!(error.to_string().contains("only supports OOXML"));
     }
 }

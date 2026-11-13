@@ -70,8 +70,8 @@ Usage: ppt2images [OPTIONS] <INPUT>
       --page-format <FORMAT>               Page-number pattern [default: {page:04}]
       --start-index <N>                    First page number [default: 1]
       --pages <RANGES>                     Pages to export; all pages by default
-  -b, --backend <auto|native|libreoffice|powerpoint>
-                                           Conversion backend [default: auto]
+  -b, --backend <native|libreoffice|powerpoint>
+                                           Conversion backend; omitted = automatic
   -j, --jobs <N>                           Page workers; 0 = automatic [default: 0]
       --overwrite                          Replace existing PNG files
   -h, --help                               Show help
@@ -207,7 +207,7 @@ file already exists, conversion fails unless `--overwrite` is passed.
 
 ## Backend selection
 
-`--backend auto` (the default) is deterministic:
+When `--backend` is omitted, backend selection is deterministic:
 
 - PPTX-family inputs use the native backend.
 - Legacy `.ppt`/`.pps`/`.pot` and `.odp` inputs use LibreOffice when it is
