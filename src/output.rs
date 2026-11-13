@@ -1,17 +1,18 @@
 //! Output naming, PNG normalization, and staged file publication.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
+use bitvec::prelude::BitVec;
 use image::codecs::png::PngEncoder;
 use image::imageops::FilterType;
 use image::{ExtendedColorType, ImageEncoder, ImageFormat, RgbImage};
 use tempfile::{Builder, TempDir};
 
 use crate::page_format::PageFormat;
+use crate::page_selection::PagePlan;
 use crate::size::Resolution;
 
 /// User-selected output options shared by all backends.
@@ -28,25 +29,27 @@ pub struct OutputSpec {
 }
 
 impl OutputSpec {
-    /// Creates a staged writer for the selected page numbers.
-    pub fn writer(&self, page_numbers: &[u64], resolution: Resolution) -> Result<OutputWriter> {
-        OutputWriter::new(self, page_numbers, resolution)
+    /// Creates a staged writer for the selected page plan.
+    pub fn writer(&self, plan: &PagePlan, resolution: Resolution) -> Result<OutputWriter> {
+        OutputWriter::new(self, plan, resolution)
     }
 }
 
-/// Writes each page into a temporary staging directory and publishes the whole
-/// set only after every page has been rendered successfully.
+/// Writes selected pages into a temporary staging directory and publishes the
+/// whole set only after every page has been rendered successfully.
 pub struct OutputWriter {
-    destinations: Vec<PathBuf>,
+    directory: PathBuf,
+    page_format: PageFormat,
     resolution: Resolution,
     overwrite: bool,
     staging: TempDir,
-    written: Vec<AtomicBool>,
+    plan: PagePlan,
+    written: Mutex<BitVec>,
 }
 
 impl OutputWriter {
-    fn new(spec: &OutputSpec, page_numbers: &[u64], resolution: Resolution) -> Result<Self> {
-        if page_numbers.is_empty() {
+    fn new(spec: &OutputSpec, plan: &PagePlan, resolution: Resolution) -> Result<Self> {
+        if plan.is_empty() {
             bail!("the page selection contains no pages");
         }
 
@@ -63,35 +66,30 @@ impl OutputWriter {
             );
         }
 
-        let mut names = BTreeSet::new();
-        let mut destinations = Vec::with_capacity(page_numbers.len());
-        for page_number in page_numbers {
-            let stem = spec.page_format.format(*page_number);
-            if !names.insert(stem.clone()) {
-                bail!("page format produces duplicate output name '{stem}.png'");
+        let mut conflicts = 0usize;
+        let mut first_conflict = None;
+        for slide_index in plan.iter_indices() {
+            let destination =
+                destination_path(&spec.directory, &spec.page_format, plan, slide_index)?;
+            if destination.is_dir() {
+                bail!("output path '{}' is a directory", destination.display());
             }
-            destinations.push(spec.directory.join(format!("{stem}.png")));
+            if !spec.overwrite && destination.exists() {
+                conflicts += 1;
+                first_conflict.get_or_insert(destination);
+            }
         }
-
-        if let Some(directory) = destinations.iter().find(|path| path.is_dir()) {
-            bail!("output path '{}' is a directory", directory.display());
-        }
-        if !spec.overwrite {
-            let conflicts: Vec<&Path> = destinations
-                .iter()
-                .map(PathBuf::as_path)
-                .filter(|path| path.exists())
-                .collect();
-            if !conflicts.is_empty() {
-                let first = conflicts[0].display();
-                if conflicts.len() == 1 {
-                    bail!("output file '{first}' already exists; pass --overwrite to replace it");
-                }
+        if let Some(first) = first_conflict {
+            if conflicts == 1 {
                 bail!(
-                    "{} output files already exist (first: '{first}'); pass --overwrite to replace them",
-                    conflicts.len()
+                    "output file '{}' already exists; pass --overwrite to replace it",
+                    first.display()
                 );
             }
+            bail!(
+                "{conflicts} output files already exist (first: '{}'); pass --overwrite to replace them",
+                first.display()
+            );
         }
 
         let staging = Builder::new()
@@ -105,34 +103,41 @@ impl OutputWriter {
             })?;
 
         Ok(Self {
-            destinations,
+            directory: spec.directory.clone(),
+            page_format: spec.page_format.clone(),
             resolution,
             overwrite: spec.overwrite,
             staging,
-            written: (0..page_numbers.len())
-                .map(|_| AtomicBool::new(false))
-                .collect(),
+            plan: plan.clone(),
+            written: Mutex::new(BitVec::repeat(false, plan.total_slides())),
         })
     }
 
-    /// Returns the final path planned for one zero-based page index.
-    pub fn page_path(&self, index: usize) -> Option<&Path> {
-        self.destinations.get(index).map(PathBuf::as_path)
+    /// Returns the final path planned for one selected zero-based slide index.
+    pub fn page_path(&self, slide_index: usize) -> Option<PathBuf> {
+        destination_path(&self.directory, &self.page_format, &self.plan, slide_index).ok()
     }
 
-    /// Normalizes and stages one rendered PNG. `index` is zero-based.
-    pub fn write_page(&self, index: usize, png_bytes: &[u8]) -> Result<()> {
-        if index >= self.destinations.len() {
-            bail!(
-                "backend produced page index {index}, but only {} pages were planned",
-                self.destinations.len()
-            );
+    /// Normalizes and stages one rendered PNG. `slide_index` is zero-based.
+    pub fn write_page(&self, slide_index: usize, png_bytes: &[u8]) -> Result<()> {
+        if !self.plan.contains(slide_index) {
+            bail!("backend produced unselected slide index {slide_index}");
         }
-        if self.written[index].swap(true, Ordering::AcqRel) {
-            bail!("backend produced page index {index} more than once");
+        {
+            let mut written = self
+                .written
+                .lock()
+                .map_err(|_| anyhow::anyhow!("output write state is poisoned"))?;
+            if written[slide_index] {
+                bail!("backend produced slide index {slide_index} more than once");
+            }
+            written.set(slide_index, true);
         }
+
         let write_result = (|| {
-            let file_name = self.destinations[index]
+            let destination =
+                destination_path(&self.directory, &self.page_format, &self.plan, slide_index)?;
+            let file_name = destination
                 .file_name()
                 .context("planned output path has no file name")?;
             let staged_path = self.staging.path().join(file_name);
@@ -140,22 +145,36 @@ impl OutputWriter {
             fs::write(&staged_path, normalized)
                 .with_context(|| format!("failed to stage output page '{}'", staged_path.display()))
         })();
-        if write_result.is_err() {
-            self.written[index].store(false, Ordering::Release);
+        if write_result.is_err()
+            && let Ok(mut written) = self.written.lock()
+        {
+            written.set(slide_index, false);
         }
         write_result
     }
 
-    /// Publishes every staged page to its final name.
+    /// Publishes every selected page to its final name.
     pub fn finish(self) -> Result<Vec<PathBuf>> {
-        if let Some(index) = self
+        let written = self
             .written
-            .iter()
-            .position(|written| !written.load(Ordering::Acquire))
+            .into_inner()
+            .map_err(|_| anyhow::anyhow!("output write state is poisoned"))?;
+        if let Some(slide_index) = self
+            .plan
+            .iter_indices()
+            .find(|slide_index| !written[*slide_index])
         {
-            bail!("backend did not produce output page {index}");
+            let page_number = self
+                .plan
+                .page_number(slide_index)
+                .unwrap_or(slide_index as u64);
+            bail!("backend did not produce page {page_number}");
         }
-        for (index, destination) in self.destinations.iter().enumerate() {
+
+        let mut files = Vec::with_capacity(self.plan.len());
+        for slide_index in self.plan.iter_indices() {
+            let destination =
+                destination_path(&self.directory, &self.page_format, &self.plan, slide_index)?;
             if destination.exists() {
                 if !self.overwrite {
                     bail!(
@@ -166,7 +185,7 @@ impl OutputWriter {
                 if destination.is_dir() {
                     bail!("output path '{}' is a directory", destination.display());
                 }
-                fs::remove_file(destination).with_context(|| {
+                fs::remove_file(&destination).with_context(|| {
                     format!(
                         "failed to replace existing output file '{}'",
                         destination.display()
@@ -177,17 +196,29 @@ impl OutputWriter {
                 .file_name()
                 .context("planned output path has no file name")?;
             let staged_path = self.staging.path().join(file_name);
-            fs::rename(&staged_path, destination).with_context(|| {
+            fs::rename(&staged_path, &destination).with_context(|| {
                 format!(
                     "failed to publish '{}' to '{}'",
                     staged_path.display(),
                     destination.display()
                 )
             })?;
-            debug_assert_eq!(self.destinations[index], *destination);
+            files.push(destination);
         }
-        Ok(self.destinations)
+        Ok(files)
     }
+}
+
+fn destination_path(
+    directory: &Path,
+    page_format: &PageFormat,
+    plan: &PagePlan,
+    slide_index: usize,
+) -> Result<PathBuf> {
+    let page_number = plan
+        .page_number(slide_index)
+        .context("slide index is not selected")?;
+    Ok(directory.join(format!("{}.png", page_format.format(page_number))))
 }
 
 fn normalize_png(png_bytes: &[u8], resolution: Resolution) -> Result<Vec<u8>> {
@@ -246,6 +277,7 @@ mod tests {
 
     use super::OutputSpec;
     use crate::page_format::PageFormat;
+    use crate::page_selection::{PagePlan, PageSelection};
     use crate::size::Resolution;
 
     fn sample_png(width: u32, height: u32) -> Vec<u8> {
@@ -266,16 +298,20 @@ mod tests {
         }
     }
 
-    fn pages(count: u64) -> Vec<u64> {
-        (1..=count).collect()
+    fn plan(selection: &str, start_index: u64, slide_count: usize) -> PagePlan {
+        PageSelection::parse(selection)
+            .unwrap()
+            .resolve(start_index, slide_count)
+            .unwrap()
     }
 
     #[test]
     fn publishes_pages_with_default_names_and_exact_size() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
+        let plan = plan("1-2", 1, 2);
         let writer = output
-            .writer(&pages(2), Resolution::new(40, 30).unwrap())
+            .writer(&plan, Resolution::new(40, 30).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(20, 20)).unwrap();
         writer.write_page(1, &sample_png(20, 20)).unwrap();
@@ -293,8 +329,9 @@ mod tests {
     fn flattens_transparency_onto_white() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
+        let plan = plan("1", 1, 1);
         let writer = output
-            .writer(&pages(1), Resolution::new(2, 2).unwrap())
+            .writer(&plan, Resolution::new(2, 2).unwrap())
             .unwrap();
         let image = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 0]));
         let mut bytes = Vec::new();
@@ -311,8 +348,9 @@ mod tests {
     fn refuses_existing_output_without_overwrite() {
         let directory = tempdir().unwrap();
         fs::write(directory.path().join("0001.png"), b"existing").unwrap();
+        let plan = plan("1", 1, 1);
         let error = spec(directory.path())
-            .writer(&pages(1), Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .err()
             .unwrap();
         assert!(error.to_string().contains("--overwrite"));
@@ -324,8 +362,9 @@ mod tests {
         fs::write(directory.path().join("0001.png"), b"existing").unwrap();
         let mut output = spec(directory.path());
         output.overwrite = true;
+        let plan = plan("1", 1, 1);
         let writer = output
-            .writer(&pages(1), Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         let files = writer.finish().unwrap();
@@ -336,12 +375,13 @@ mod tests {
     fn incomplete_output_is_not_published() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
+        let plan = plan("1-2", 1, 2);
         let writer = output
-            .writer(&pages(2), Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         let error = writer.finish().err().unwrap();
-        assert!(error.to_string().contains("page 1"));
+        assert!(error.to_string().contains("page 2"));
         assert!(!directory.path().join("0001.png").exists());
     }
 
@@ -351,8 +391,9 @@ mod tests {
         let mut output = spec(directory.path());
         output.start_index = 5;
         output.page_format = PageFormat::parse("slide-{page:03}").unwrap();
+        let plan = plan("5-6", 5, 10);
         let writer = output
-            .writer(&[5, 6], Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         writer.write_page(1, &sample_png(10, 10)).unwrap();
@@ -365,8 +406,9 @@ mod tests {
     fn supports_concurrent_page_writes() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
+        let plan = plan("1-2", 1, 2);
         let writer = output
-            .writer(&pages(2), Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .unwrap();
         std::thread::scope(|scope| {
             scope.spawn(|| writer.write_page(0, &sample_png(10, 10)).unwrap());
@@ -379,11 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_and_out_of_range_pages() {
+    fn rejects_duplicate_and_unselected_pages() {
         let directory = tempdir().unwrap();
         let output = spec(directory.path());
+        let plan = plan("1", 1, 2);
         let writer = output
-            .writer(&pages(1), Resolution::new(10, 10).unwrap())
+            .writer(&plan, Resolution::new(10, 10).unwrap())
             .unwrap();
         writer.write_page(0, &sample_png(10, 10)).unwrap();
         assert!(writer.write_page(0, &sample_png(10, 10)).is_err());

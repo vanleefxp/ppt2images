@@ -56,13 +56,13 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
         .context("failed to derive an output size from the native slide dimensions")?;
     let scale = render_scale(base_width, base_height, resolution);
     let fonts = fonts::load_system_fonts()?;
-    let writer = request.output.writer(&plan.page_numbers, resolution)?;
+    let writer = request.output.writer(&plan, resolution)?;
     let progress = Progress::new(plan.len());
     let completed = AtomicUsize::new(0);
 
-    parallel::for_each_with(
+    parallel::for_each_selected_with(
         request.jobs,
-        plan.len(),
+        &plan,
         || {
             let mut presentation = Presentation::open(&bytes).with_context(|| {
                 format!(
@@ -73,9 +73,10 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
             fonts::register_fonts(&mut presentation, &fonts)?;
             Ok(presentation)
         },
-        |presentation, output_index| {
-            let page_number = plan.page_numbers[output_index];
-            let slide_index = plan.slide_indices[output_index];
+        |presentation, slide_index| {
+            let page_number = plan
+                .page_number(slide_index)
+                .context("selected slide index has no page number")?;
             let rendered = presentation
                 .render_png(
                     slide_index,
@@ -94,10 +95,10 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
                 });
             }
             writer
-                .write_page(output_index, &rendered.bytes)
+                .write_page(slide_index, &rendered.bytes)
                 .with_context(|| format!("failed to write page {page_number}"))?;
             let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
-            progress.advance(done, writer.page_path(output_index));
+            progress.advance(done, writer.page_path(slide_index).as_deref());
             Ok(())
         },
     )?;

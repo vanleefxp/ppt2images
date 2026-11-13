@@ -111,9 +111,8 @@ decks and high resolutions.
   own presentation instance because the renderer session is not thread-safe.
 - The LibreOffice backend still runs `soffice` once serially to produce the PDF,
   but rasterizes PDF pages in parallel.
-- The PowerPoint COM export itself remains serial because PowerPoint automation
-  is single-instance. Its final image normalization and writing stage is
-  parallelized.
+- The PowerPoint COM export and finalization remain serial because PowerPoint
+  automation is single-instance. `--jobs` does not speed up that backend.
 
 Page output remains deterministic and is published in page order regardless of
 worker completion order. Parallelism increases memory use, especially at high
@@ -183,7 +182,9 @@ Use `--pages` to export only selected slides. Numbers use the same indexing as
 
 Comma-separated ranges may overlap. Overlapping pages are merged and exported
 once, in ascending page order. The progress total and final image count reflect
-only the selected pages.
+only the selected pages. Selected indices are stored as a bitmap with one bit
+per slide; page numbers are derived from the `--start-index` offset only when
+output names are built.
 
 Examples:
 

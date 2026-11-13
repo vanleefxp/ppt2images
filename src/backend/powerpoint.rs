@@ -10,7 +10,6 @@ use anyhow::{Context, Result, bail};
 
 use super::{ConversionOutput, ConversionRequest};
 use crate::page_selection::{PagePlan, PageSelection};
-use crate::parallel;
 use crate::progress::Progress;
 use crate::size::{Resolution, SizeSpec, SourceSize};
 
@@ -164,17 +163,17 @@ pub fn convert(request: &ConversionRequest) -> Result<ConversionOutput> {
     }
 
     eprintln!("Finalizing {} exported images", exported.len());
-    let writer = request.output.writer(&plan.page_numbers, resolution)?;
-    parallel::for_each(request.jobs, plan.len(), |index| {
-        let page_number = plan.page_numbers[index];
-        let path = &exported[index];
+    let writer = request.output.writer(&plan, resolution)?;
+    for (slide_index, path) in plan.iter_indices().zip(&exported) {
+        let page_number = plan
+            .page_number(slide_index)
+            .context("selected slide index has no page number")?;
         let bytes = fs::read(path)
             .with_context(|| format!("failed to read exported image '{}'", path.display()))?;
         writer
-            .write_page(index, &bytes)
+            .write_page(slide_index, &bytes)
             .with_context(|| format!("failed to write page {page_number}"))?;
-        Ok(())
-    })?;
+    }
     let files = writer.finish()?;
     Ok(ConversionOutput { files, resolution })
 }
@@ -282,8 +281,7 @@ fn run_script(
                     match target {
                         Ok((target, selected)) => {
                             let slides = selected
-                                .slide_indices
-                                .iter()
+                                .iter_indices()
                                 .map(|index| (index + 1).to_string())
                                 .collect::<Vec<_>>()
                                 .join(",");
@@ -525,12 +523,10 @@ mod tests {
                 height: 180,
             })
         );
-        assert_eq!(
-            run.plan,
-            Some(crate::page_selection::PagePlan {
-                page_numbers: vec![2],
-                slide_indices: vec![1],
-            })
-        );
+        let plan = run.plan.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan.total_slides(), 2);
+        assert_eq!(plan.iter_indices().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(plan.page_number(1), Some(2));
     }
 }

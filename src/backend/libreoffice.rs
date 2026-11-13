@@ -165,13 +165,15 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
         .resolve(request.output.start_index, pages.len())
         .map_err(anyhow::Error::msg)
         .context("invalid page selection")?;
-    let writer = request.output.writer(&plan.page_numbers, resolution)?;
+    let writer = request.output.writer(&plan, resolution)?;
     let progress = Progress::new(plan.len());
     let completed = AtomicUsize::new(0);
 
-    parallel::for_each(request.jobs, plan.len(), |output_index| {
-        let page_number = plan.page_numbers[output_index];
-        let page = &pages[plan.slide_indices[output_index]];
+    parallel::for_each_selected(request.jobs, &plan, |slide_index| {
+        let page_number = plan
+            .page_number(slide_index)
+            .context("selected slide index has no page number")?;
+        let page = &pages[slide_index];
         let (page_width, page_height) = page.render_dimensions();
         if page_width <= 0.0 || page_height <= 0.0 {
             bail!("PDF page {page_number} has an invalid size");
@@ -195,10 +197,10 @@ fn render_pdf(bytes: &[u8], request: &ConversionRequest) -> Result<ConversionOut
             .into_png()
             .with_context(|| format!("failed to encode PDF page {page_number}"))?;
         writer
-            .write_page(output_index, &png)
+            .write_page(slide_index, &png)
             .with_context(|| format!("failed to write page {page_number}"))?;
         let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
-        progress.advance(done, writer.page_path(output_index));
+        progress.advance(done, writer.page_path(slide_index).as_deref());
         Ok(())
     })?;
     let files = writer.finish()?;

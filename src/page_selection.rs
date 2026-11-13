@@ -1,7 +1,8 @@
 //! Page-range selection and resolution against a slide count.
 
-use std::collections::BTreeSet;
 use std::num::NonZeroU64;
+
+use bitvec::prelude::BitVec;
 
 /// A validated set of page ranges.
 ///
@@ -19,19 +20,49 @@ struct PageRange {
     step: NonZeroU64,
 }
 
-/// Resolved page numbers and their zero-based slide indices.
+/// Resolved page selection stored as one bit per slide.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagePlan {
-    /// Selected page numbers in ascending order.
-    pub page_numbers: Vec<u64>,
-    /// Zero-based slide indices corresponding to `page_numbers`.
-    pub slide_indices: Vec<usize>,
+    selected: BitVec,
+    start_index: u64,
+    selected_count: usize,
 }
 
 impl PagePlan {
     /// Number of selected pages.
     pub fn len(&self) -> usize {
-        self.page_numbers.len()
+        self.selected_count
+    }
+
+    /// Whether no pages were selected.
+    pub fn is_empty(&self) -> bool {
+        self.selected_count == 0
+    }
+
+    /// Total number of slides represented by the bitmap.
+    pub fn total_slides(&self) -> usize {
+        self.selected.len()
+    }
+
+    /// Whether a zero-based slide index is selected.
+    pub fn contains(&self, slide_index: usize) -> bool {
+        self.selected
+            .get(slide_index)
+            .is_some_and(|selected| *selected)
+    }
+
+    /// Returns the page number for a selected slide index.
+    pub fn page_number(&self, slide_index: usize) -> Option<u64> {
+        if !self.contains(slide_index) {
+            return None;
+        }
+        let index = u64::try_from(slide_index).ok()?;
+        self.start_index.checked_add(index)
+    }
+
+    /// Iterates selected zero-based slide indices in ascending order.
+    pub fn iter_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.selected.iter_ones()
     }
 }
 
@@ -80,7 +111,8 @@ impl PageSelection {
             .checked_add(count - 1)
             .ok_or_else(|| "page numbering overflow".to_owned())?;
 
-        let mut pages = BTreeSet::new();
+        let mut selected = BitVec::repeat(false, slide_count);
+        let mut selected_count = 0;
         for range in &self.ranges {
             let first = range.start.unwrap_or(start_index);
             let last = range.end.unwrap_or(last_page);
@@ -92,7 +124,12 @@ impl PageSelection {
 
             let mut page = first;
             loop {
-                pages.insert(page);
+                let index = usize::try_from(page - start_index)
+                    .map_err(|_| "page index is too large for this platform".to_owned())?;
+                if !selected[index] {
+                    selected.set(index, true);
+                    selected_count += 1;
+                }
                 let Some(next) = page.checked_add(range.step.get()) else {
                     break;
                 };
@@ -103,20 +140,13 @@ impl PageSelection {
             }
         }
 
-        if pages.is_empty() {
+        if selected_count == 0 {
             return Err("page selection resolved to no pages".to_owned());
         }
-        let page_numbers: Vec<u64> = pages.into_iter().collect();
-        let slide_indices = page_numbers
-            .iter()
-            .map(|page| {
-                usize::try_from(page - start_index)
-                    .map_err(|_| "page index is too large for this platform".to_owned())
-            })
-            .collect::<Result<_, _>>()?;
         Ok(PagePlan {
-            page_numbers,
-            slide_indices,
+            selected,
+            start_index,
+            selected_count,
         })
     }
 }
@@ -212,11 +242,13 @@ mod tests {
     use super::PageSelection;
 
     fn resolve(selection: &str, start_index: u64, slide_count: usize) -> Vec<u64> {
-        PageSelection::parse(selection)
+        let plan = PageSelection::parse(selection)
             .unwrap()
             .resolve(start_index, slide_count)
-            .unwrap()
-            .page_numbers
+            .unwrap();
+        plan.iter_indices()
+            .map(|index| plan.page_number(index).unwrap())
+            .collect()
     }
 
     #[test]
@@ -244,8 +276,13 @@ mod tests {
     #[test]
     fn honors_start_index_and_relative_open_ranges() {
         let plan = PageSelection::parse("5-7").unwrap().resolve(5, 10).unwrap();
-        assert_eq!(plan.page_numbers, vec![5, 6, 7]);
-        assert_eq!(plan.slide_indices, vec![0, 1, 2]);
+        assert_eq!(
+            plan.iter_indices()
+                .map(|index| plan.page_number(index).unwrap())
+                .collect::<Vec<_>>(),
+            vec![5, 6, 7]
+        );
+        assert_eq!(plan.iter_indices().collect::<Vec<_>>(), vec![0, 1, 2]);
 
         assert_eq!(resolve("-7", 5, 10), vec![5, 6, 7]);
         assert_eq!(resolve("7-@2", 5, 10), vec![7, 9, 11, 13]);
@@ -254,16 +291,35 @@ mod tests {
     #[test]
     fn all_ranges_defaults_to_every_page() {
         let plan = PageSelection::default().resolve(1, 4).unwrap();
-        assert_eq!(plan.page_numbers, vec![1, 2, 3, 4]);
-        assert_eq!(plan.slide_indices, vec![0, 1, 2, 3]);
+        assert_eq!(
+            plan.iter_indices()
+                .map(|index| plan.page_number(index).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(plan.iter_indices().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
         assert_eq!(plan.len(), 4);
+        assert_eq!(plan.total_slides(), 4);
+        assert!(plan.contains(0));
+        assert!(!plan.contains(4));
+        assert_eq!(plan.page_number(4), None);
+    }
+
+    #[test]
+    fn stores_one_bit_per_slide() {
+        let plan = PageSelection::parse("2").unwrap().resolve(1, 10).unwrap();
+        assert_eq!(plan.total_slides(), 10);
+        assert_eq!(plan.len(), 1);
+        assert!(!plan.contains(0));
+        assert!(plan.contains(1));
+        assert_eq!(plan.page_number(1), Some(2));
     }
 
     #[test]
     fn rejects_invalid_syntax() {
         for selection in [
             "", ",", "1,,2", "-", "1-2-3", "1-2@", "1-2@0", "1-2@x", "6@2", "1@2@3", "a-b",
-            "1-2-@3",
+            "1-2-@3", "5-3",
         ] {
             assert!(
                 PageSelection::parse(selection).is_err(),
